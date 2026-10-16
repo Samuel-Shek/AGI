@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img"><title>AGI · JARVIS</title>
+<defs>
+    <radialGradient id="plate"><stop stop-color="#091C29"/><stop offset="1" stop-color="#0D1219"/></radialGradient>
+    <radialGradient id="energy"><stop stop-color="#FFFFFF"/><stop offset="1" stop-color="#71ECFF"/></radialGradient>
+    <radialGradient id="arc"><stop stop-color="#C8FBFF"/><stop offset="1" stop-color="#13CFFA"/></radialGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="12"/></filter>
+  </defs>
+<rect x="64" y="64" width="896" height="896" rx="208" fill="url(#plate)"/>
+<g aria-label="JARVIS-inspired energy core">
+    <g fill="none" stroke="#00A9FF" opacity=".7" filter="url(#glow)">
+      <path d="M 662.277 297.382 A 262 262 0 0 0 361.723 297.382" stroke-width="72"/>
+      <path d="M 250.997 489.165 A 262 262 0 0 0 401.274 749.453" stroke-width="72"/>
+      <path d="M 622.726 749.453 A 262 262 0 0 0 773.003 489.165" stroke-width="72"/>
+      <circle cx="512" cy="512" r="330" stroke-width="5"/>
+    </g>
+    <circle cx="512" cy="512" r="330" fill="none" stroke="#37DDFF" stroke-width="5"/>
+    <g fill="none" stroke="#10A1E2" stroke-width="11">
+      <path d="M 812.106 442.715 A 308 308 0 0 0 722.055 286.743"/>
+      <path d="M 301.945 286.743 A 308 308 0 0 0 211.894 442.715"/>
+      <path d="M 421.950 806.542 A 308 308 0 0 0 602.050 806.542"/>
+    </g>
+    <g fill="url(#arc)" stroke="#76EFFF" stroke-width="3">
+      <path d="M 682.926 267.893 A 298 298 0 0 0 341.074 267.893 L 382.372 326.872 A 226 226 0 0 1 641.628 326.872 Z"/>
+      <path d="M 215.134 486.028 A 298 298 0 0 0 386.060 782.080 L 416.488 716.826 A 226 226 0 0 1 286.860 492.303 Z"/>
+      <path d="M 637.940 782.080 A 298 298 0 0 0 808.866 486.028 L 737.140 492.303 A 226 226 0 0 1 607.512 716.826 Z"/>
+    </g>
+    <circle cx="512" cy="512" r="191" fill="none" stroke="#0B6496" stroke-width="5"/>
+    <g fill="none" stroke="#1ACCF6" stroke-width="29">
+      <path d="M 669.615 500.978 A 158 158 0 0 0 600.352 381.012"/>
+      <path d="M 581.263 369.991 A 158 158 0 0 0 442.737 369.991"/>
+      <path d="M 423.648 381.012 A 158 158 0 0 0 354.385 500.978"/>
+      <path d="M 354.385 523.022 A 158 158 0 0 0 423.648 642.988"/>
+      <path d="M 442.737 654.009 A 158 158 0 0 0 581.263 654.009"/>
+      <path d="M 600.352 642.988 A 158 158 0 0 0 669.615 523.022"/>
+    </g>
+    <circle cx="512" cy="512" r="137" fill="none" stroke="#3CD6FF" stroke-width="3"/>
+    <circle cx="512" cy="512" r="94" fill="#00B9FF" filter="url(#glow)"/>
+    <circle cx="512" cy="512" r="94" fill="url(#energy)"/>
+  </g>
+</svg>

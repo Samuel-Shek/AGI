@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "sync-observer-draft",
+  "status": "draft",
+  "enabled": false,
+  "approved_by": null,
+  "issued_at": null,
+  "expires_at": null,
+  "source_root": "/Users/example/AI/LocalData/WORKPLACE-Memory-Bridge.nosync",
+  "asset_id": "sync-center",
+  "interval_seconds": 60,
+  "max_observations": 20160,
+  "enable_recurring": false,
+  "model_export": false,
+  "production_write": false
+}

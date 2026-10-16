@@ -1,0 +1,11 @@
+# Jev advisory memory ordering
+
+The existing worker runs unchanged unless the authenticated Jev service reports an `assist` release bound to the exact installed `jev_ranking.py` hash. An unavailable service, unqualified release or disabled caller keeps the original worker. Jev never grants memory-write authority.
+
+In the qualified path, preserve original admission time from work events and persist first-seen time for new candidates. Prepare at most ten currently actionable items, preserve the oldest two processing seats, then promote only usable high-priority results into the remaining seats (at most five investigations total). Other items retain relative order. Human decisions and unchanged evidence checkpoints are preserved; content and authority are checked again before existing processing.
+
+Inference is bounded to four concurrent calls and a shared ten-second deadline. Only hashes and local identifiers enter the attempt/order ledger; candidate bodies remain transient. A content-version attempt is recorded before dispatch and cannot gain a fresh attempt through restart or release changes. The service independently checks operator-reviewed exact-content permits, current source, caller and policy. Lack of permission never removes an item from local investigation.
+
+Ordering is persisted as awaiting receipts before completion acknowledgements. Only a successful local write of all required acknowledgements marks the batch committed. Rejected, unknown or unsaved completion returns the original order and retains its history; it does not resubmit. If even invalidation cannot be saved, the awaiting-receipts state stays excluded from adoption metrics. Inference, local order selection, service completion acknowledgement, and actual investigation are separate evidence. Unchanged order is not an improvement. Status exposes a bounded latest-100-batch summary, with unavailable values when the tables cannot be read.
+
+Rollback disables the scenario first and restores the original worker; retain live memory, decisions, work records, attempts, charges and receipts. Never restore an old database. A qualified model test does not prove natural improvement or authorize business facts.

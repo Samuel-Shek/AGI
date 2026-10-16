@@ -1,0 +1,28 @@
+name: Feature request
+description: Suggest a privacy-preserving improvement.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: "Features that enable hidden monitoring, team surveillance, or default cloud sync are out of scope."
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What personal, local-first workflow does this improve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+    validations:
+      required: true
+  - type: textarea
+    id: privacy
+    attributes:
+      label: Privacy impact
+      description: What data would be collected, stored, or exported?
+    validations:
+      required: true

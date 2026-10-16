@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "AGI Browser Signals",
+  "version": "0.9.1",
+  "description": "Sends low-sensitivity browser context signals to the local AGI core.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAs4KoerhqMF72e+RObfUfAwdieKYtLvUKynQZFOHDUDYgC2uiCVUdieITqJtOAa4F+fYQdiMBs1DW2YfTPHVDHT1TjB1LYxS+2U91cp5L/T98cvc4/UAkQycAUMxlTR4+fR6CNSbPzlXy+X6BFSpSf4NN9ZJY12AM2d0AFg1PAaoECAyge1COc9c4KzYYwtotjjUdIMCbKOtStlbG3jem/JGksqBx4AaVh3Y5CtimpmwSYAD1fqpbSDgnoM86phJFdPadpyW7ZI+dL5HmOfUA3RYJCkDwUBJsyLvhQ1qUzIr6NPXRT35kl1C7m8dp+ZCdZcGgTT28UScN/mNUipSt7wIDAQAB",
+  "permissions": ["nativeMessaging", "tabs", "webNavigation"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["policy.js", "content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "incognito": "split"
+}

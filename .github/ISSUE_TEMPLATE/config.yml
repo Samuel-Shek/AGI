@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security or privacy vulnerability
+    url: https://github.com/Samuel-Shek/AGI/security/advisories/new
+    about: Use GitHub private security advisories or an existing private maintainer channel. Do not file public issues with sensitive details.

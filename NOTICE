@@ -1,0 +1,22 @@
+Personal AI Monitor
+
+Personal AI Monitor is a local-first macOS personal context recall project.
+
+Runtime data, screenshots, OCR source text, logs, debug tokens, SQLite
+databases, HA package caches, raw vault contents, and real activity records are
+intentionally excluded from the repository and must not be redistributed.
+
+The project must not be used to normalize hidden monitoring, employee
+surveillance, classroom monitoring, or collection of another person's activity
+without informed consent.
+
+Public snapshot adaptations: bundled source-admission helpers with no private
+configuration; generic owner fixtures; no personal memory catalogue or private
+schedule registrations. The original AGPL-3.0-only terms continue to apply.
+The Hermes-derived component retains its separate MIT license and provenance.
+
+External domain-list data: no compiled Bloom snapshot is redistributed in this
+public snapshot. The optional regeneration tool names StevenBlack/hosts,
+blocklistproject/Lists, HaGeZi DNS Blocklists, and OISD as separate upstream
+sources. Their own licenses govern any separately downloaded or rebuilt data.
+Built-in local safeguards remain part of this project's source.

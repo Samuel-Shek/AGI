@@ -1,0 +1,29 @@
+name: Public source checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  portable-core:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Privacy and extension boundaries
+        run: python3 -B tools/release_privacy_scan.py
+      - name: Portable core boundaries
+        working-directory: core
+        run: python3 -B -m unittest discover -s tests -p 'test_public_snapshot.py'
+      - name: Evolution engine
+        working-directory: core/evolution
+        run: python3 -B -m unittest discover -s tests
+  swift-build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Build native application source
+        run: swift build --package-path apps/PersonalAIMonitorMenuBar

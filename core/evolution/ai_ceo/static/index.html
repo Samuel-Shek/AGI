@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>AI CEO · 本地工作台</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+  <aside class="rail" aria-label="主导航">
+    <a class="brand" href="#overview" aria-label="AI CEO 工作台首页"><span class="brand-mark" aria-hidden="true">C</span><span>AI CEO<small>个人电脑自治工作台</small></span></a>
+    <div class="rail-rule"></div>
+    <nav><a href="#overview"><span>01</span> 运行概况</a><a href="#assets"><span>02</span> 观察对象</a><a href="#tasks"><span>03</span> 工作队列</a><a href="#evidence"><span>04</span> 验证与记录</a><a href="#boundaries"><span>05</span> 授权边界</a></nav>
+    <div class="rail-bottom"><span class="small-label">LOCAL WORKSPACE</span><p>每一步有依据，<br>每一刻可接管。</p><span class="rail-footnote" id="version">本地验收版</span></div>
+  </aside>
+
+  <main id="main" tabindex="-1">
+    <header class="topline"><span><span class="tiny-dot" aria-hidden="true"></span> 仅在这台电脑上</span><span id="connection-state">等待连接</span></header>
+    <div class="notice notice-error" id="connection-error" role="alert" hidden></div>
+    <section class="auth-panel" id="auth-panel" aria-labelledby="auth-title" hidden>
+      <span class="eyebrow">LOCAL ACCESS</span><h1 id="auth-title">从本地启动地址进入</h1>
+      <p>面板需要本次启动的访问凭证。请重新打开本地启动输出中的完整地址；也可以在下方输入凭证。凭证仅保留在当前页面内存中，刷新后需要重新连接。</p>
+      <div class="auth-fields"><label for="access-token">本次访问凭证</label><input id="access-token" type="password" autocomplete="off" spellcheck="false"><button class="button primary" id="connect-button">连接工作台</button></div>
+    </section>
+
+    <div id="workspace" hidden>
+      <section id="overview" class="hero" aria-labelledby="hero-title">
+        <div class="hero-copy"><span class="eyebrow">YOUR COMPUTER, UNDER YOUR DIRECTION</span><h1 id="hero-title">日常有序。<br><em>决定在你。</em></h1><p class="hero-description">从有证据的观察开始，逐步接手日常工作。<br>当前以本地验收为主，能力与授权状态始终可见。</p></div>
+        <div class="status-panel"><div class="status-top"><span class="small-label">当前状态</span><span class="badge neutral" id="mode-badge">尚未读取</span></div><p class="status-title" id="mode-title">等待本地状态</p><p class="status-explanation" id="mode-reason">没有状态证据时，不判断为正常。</p><div class="control-row"><button class="button compact" data-control="pause" id="pause-button">暂停</button><button class="button compact" data-control="resume" id="resume-button">恢复已授权观察</button><button class="button compact danger" data-control="stop" id="stop-button">停止全部</button></div><p class="microcopy" id="controls-explanation">暂停自动调度；手动的一次观察和回放仍按授权执行。停止阻止所有新动作。恢复不会扩大授权。</p></div>
+      </section>
+      <div class="deployment-line"><span class="badge neutral" id="stage-badge">阶段 0 · 接入与回放</span><span id="deployment-state">尚未读取常驻状态</span><span class="last-updated">状态更新 <time id="updated-at">—</time></span></div>
+
+      <section class="section" aria-labelledby="next-title"><div class="section-heading"><div><span class="section-number">现在可以做</span><h2 id="next-title">先让判断经得起检查</h2></div><span class="quiet-label">按需执行 · 本地留痕</span></div><div class="action-grid"><article class="action-card"><span class="action-index">A</span><div><h3>读取一次状态</h3><p id="observe-reason">核对读取授权后，读取白名单状态字段。</p><button class="button primary" id="observe-button" disabled>读取一次状态 <span aria-hidden="true">↗</span></button><p class="microcopy">仅使用固定只读入口，不修改业务数据。</p></div></article><article class="action-card"><span class="action-index">B</span><div><h3>运行本地回放</h3><p id="replay-reason">用固定场景检查判断、恢复和不行动的条件。</p><button class="button" id="replay-button" disabled>运行固定场景 <span aria-hidden="true">↗</span></button><p class="microcopy">回放通过不代表真实业务已经验收。</p></div></article></div></section>
+
+      <section class="section" id="assets" aria-labelledby="assets-title"><div class="section-heading"><div><span class="section-number">02 / ASSETS</span><h2 id="assets-title">观察对象</h2></div><span class="quiet-label">各项目单独授权</span></div><div class="asset-list" id="asset-list"></div></section>
+
+      <section class="section" id="tasks" aria-labelledby="tasks-title"><div class="section-heading"><div><span class="section-number">03 / WORK QUEUE</span><h2 id="tasks-title">工作队列</h2></div><span class="quiet-label" id="task-count">尚未读取</span></div><div class="queue-explanation">发现问题后才形成任务。没有足够证据时，继续观察或决定不改动。</div><div id="task-list"></div></section>
+
+      <section class="section" id="evidence" aria-labelledby="evidence-title"><div class="section-heading"><div><span class="section-number">04 / EVIDENCE</span><h2 id="evidence-title">验证与记录</h2></div><button class="text-button" id="refresh-button">刷新状态 <span aria-hidden="true">↻</span></button></div><div class="evidence-grid"><article class="evidence-card"><h3>最近一次回放</h3><div id="replay-result"></div></article><article class="evidence-card"><h3>改善基线</h3><p>以人工介入、重复故障与实际节省时间判断价值。</p><div id="baseline-result"></div></article></div><details class="record-details"><summary>查看操作记录 <span id="audit-count"></span></summary><div id="audit-list"></div></details></section>
+
+      <section class="section" id="boundaries" aria-labelledby="boundaries-title"><div class="section-heading"><div><span class="section-number">05 / BOUNDARIES</span><h2 id="boundaries-title">自治的边界</h2></div><span class="quiet-label">能力可见 · 权限不自增</span></div><div class="capability-list" id="capability-list"></div><ul class="boundary-list" id="boundary-list"></ul></section>
+      <footer class="page-footer"><span>AI CEO <span aria-hidden="true">/</span> 从可验证的改善开始</span><span>没有接入，不等于没有问题。</span></footer>
+    </div>
+    <div id="activity-message" class="activity-message" role="status" aria-live="polite" aria-atomic="true" hidden></div>
+  </main>
+</body>
+</html>

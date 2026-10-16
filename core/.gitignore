@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.DS_Store
+data/*.sqlite
+data/*.sqlite-*
+data/.debug-token
+data/.debug-tokens.json
+data/raw_vault/
+data/ha_packages/
+data/demo-check-packages/

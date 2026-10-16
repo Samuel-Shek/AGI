@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Disabled</key>
+	<true/>
+	<key>KeepAlive</key>
+	<false/>
+	<key>Label</key>
+	<string>local.ai-ceo.observer</string>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Library/Frameworks/Python.framework/Versions/3.12/bin/python3</string>
+		<string>-B</string>
+		<string>-m</string>
+		<string>ai_ceo</string>
+		<string>--state</string>
+		<string>/Users/example/Documents/Codex/2026-09-08/ai-ceo-ai-agent-ai-ai/work/ai-ceo-observer</string>
+		<string>daemon</string>
+		<string>--grant</string>
+		<string>/Users/example/Documents/Codex/2026-09-08/ai-ceo-ai-agent-ai-ai/outputs/ai-ceo/examples/observer-grant.draft.json</string>
+		<string>--url-file</string>
+		<string>/Users/example/Documents/Codex/2026-09-08/ai-ceo-ai-agent-ai-ai/work/ai-ceo-observer/observer-entry.txt</string>
+	</array>
+	<key>RunAtLoad</key>
+	<false/>
+	<key>WorkingDirectory</key>
+	<string>/Users/example/Documents/Codex/2026-09-08/ai-ceo-ai-agent-ai-ai/outputs/ai-ceo</string>
+</dict>
+</plist>

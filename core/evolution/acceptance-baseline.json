@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "baseline_version": "sync-receipt-replay-v1",
+  "case_count": 21,
+  "files": {
+    "fixtures/sync_cases.json": "42a4da974fca19b4b90f42d486aaa4944c3f67471e4ec4417e379f5b1bcad45a",
+    "ai_ceo/observers.py": "07ed684598235b280038d308bbbd7c544018a8e22cdd5231dc3a7bb5b0e806c0",
+    "ai_ceo/verification.py": "9e89b01658dc8b0364b7a9bf12bef57b493898d02f63fa1bbe229638a86a8f64",
+    "ai_ceo/policy.py": "5b99f0b769cc8e8e9be1ba13d9fbe5e3d21ad3b636d12f842566d2e3fd384c41",
+    "ai_ceo/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "scope": "synthetic regression; not production acceptance",
+  "frozen_by": "implementation acceptance, 2026-09-08"
+}

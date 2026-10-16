@@ -1,0 +1,36 @@
+name: Bug report
+description: Report a Personal AI Monitor bug using synthetic or redacted data only.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not attach real screenshots, raw keyframes, SQLite databases, logs, HA packages, OCR text, tokens, local paths, account data, or private activity records.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: synthetic-repro
+    attributes:
+      label: Synthetic reproduction steps
+      description: Use fake data that cannot reveal personal activity.
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy-check
+    attributes:
+      label: Privacy check
+      options:
+        - label: I did not include screenshots, raw keyframes, databases, logs, HA packages, OCR text, tokens, local paths, or real activity records.
+          required: true

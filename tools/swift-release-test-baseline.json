@@ -1,0 +1,196 @@
+{
+  "swift_testing": [
+    {
+      "display_name": "Pending-card pagination rejects a page after any refresh or mutation generation change",
+      "identifier": "activityConfirmationGenerationFenceRejectsStalePage"
+    },
+    {
+      "display_name": "Recorded deferral permits a new explicit judgment only after a verified unresolved read",
+      "identifier": "attentionDeferralCanBeAnsweredLater"
+    },
+    {
+      "display_name": "Only exact prewrite rejections unlock after rereading and ambiguous commits remain unknown",
+      "identifier": "attentionOutcomeClassificationFailsClosed"
+    },
+    {
+      "display_name": "Unknown totals retain trustworthy decisions without inventing a count",
+      "identifier": "attentionPartialKeepsReadableDecisions"
+    },
+    {
+      "display_name": "Decision closures remain at the top and are excluded from follow-up and history",
+      "identifier": "attentionPartitionsKeepAllDecisions"
+    },
+    {
+      "display_name": "A verified rejection requires a fresh detail read and retains every receipt",
+      "identifier": "attentionRejectedWriteNeedsVerifiedRead"
+    },
+    {
+      "display_name": "A previous opening or a different mode cannot own the current detail",
+      "identifier": "attentionReopeningRejectsOldIdentity"
+    },
+    {
+      "display_name": "In-flight submissions remain blocked across collapse and preserve late receipts",
+      "identifier": "attentionSubmissionSurvivesPresentationClose"
+    },
+    {
+      "display_name": "Unknown outcomes never become a free retry or disappear after reopening",
+      "identifier": "attentionUnknownWriteIsNotRetried"
+    },
+    {
+      "display_name": "A changed version invalidates old choices while preserving the opening identity",
+      "identifier": "attentionVersionChangeInvalidatesOldTerms"
+    },
+    {
+      "display_name": "Zero decisions still retains system work and cancellation with pending verification",
+      "identifier": "attentionZeroDoesNotHideFollowUp"
+    },
+    {
+      "display_name": "Closure states and original responsible chat survive attention decoding",
+      "identifier": "closureProjectionRetainsStateAndThread"
+    },
+    {
+      "display_name": "Unreadable closure item fails closed instead of a verified empty list",
+      "identifier": "closureUnreadableProjectionIsNotZero"
+    },
+    {
+      "display_name": "Cross-channel invalidation blocks old search and handoff responses",
+      "identifier": "phase2CrossChannelInvalidation"
+    },
+    {
+      "display_name": "Experiment-status refresh failure preserves every feedback submission checkpoint",
+      "identifier": "phase2ExperimentRefreshFailurePreservesFeedbackCheckpoints"
+    },
+    {
+      "display_name": "Queued Preview A feedback makes zero calls after Preview B is bound",
+      "identifier": "phase2FeedbackActionTimeAuthorization"
+    },
+    {
+      "display_name": "Recorded feedback stays closed until the current running status checkpoint",
+      "identifier": "phase2FeedbackStatusRefreshPending"
+    },
+    {
+      "display_name": "Feedback submission checkpoint survives navigation and stale presentation tokens",
+      "identifier": "phase2FeedbackSubmissionCheckpointSurvivesNavigation"
+    },
+    {
+      "display_name": "Find project and 90-day filters use an explicit stdin range",
+      "identifier": "phase2FindFiltersUseExplicitStdinRange"
+    },
+    {
+      "display_name": "Phase 2 UI flag is off by default and Command-K routes to Find",
+      "identifier": "phase2FlagAndRoute"
+    },
+    {
+      "display_name": "Unreadable state clears all trusted surfaces and stale responses are ignored",
+      "identifier": "phase2GenerationAndClear"
+    },
+    {
+      "display_name": "Semantic handoff rejection stays local to preview",
+      "identifier": "phase2HandoffRejectionIsolation"
+    },
+    {
+      "display_name": "Old same-ref handoff render cannot consume a newer timer generation",
+      "identifier": "phase2HandoffRenderGeneration"
+    },
+    {
+      "display_name": "Presentation copy never exposes Core reason codes",
+      "identifier": "phase2PresentationCopyIsClosed"
+    },
+    {
+      "display_name": "Quick capture requires owner confirmation and rejects private residue",
+      "identifier": "phase2QuickCaptureSafety"
+    },
+    {
+      "display_name": "Find query stays in bounded stdin and never enters argv",
+      "identifier": "phase2SearchUsesStdin"
+    },
+    {
+      "display_name": "Snapshot decoder separates verified context and clues",
+      "identifier": "phase2SnapshotPartitions"
+    },
+    {
+      "display_name": "Snapshot rejects raw access and internal IDs",
+      "identifier": "phase2SnapshotRejectsPrivateResidue"
+    },
+    {
+      "display_name": "Core JSON boundary parses stdout only",
+      "identifier": "phase2StdoutOnlyBoundary"
+    },
+    {
+      "display_name": "System health resolves normal paused error and unknown consistently",
+      "identifier": "phase2SystemHealthResolution"
+    },
+    {
+      "display_name": "Owner action and feedback content stay in stdin",
+      "identifier": "phase2WriteContractsUseStdin"
+    }
+  ],
+  "version": 1,
+  "xctest": [
+    "testActivityConfirmationGenerationFenceRejectsStaleLoadMorePage",
+    "testArbitraryEvidenceAndResultAreNeverRendered",
+    "testAttentionReadCoalescingPreservesRequiredFollowUpAndWithdrawal",
+    "testAvailableSnapshotDecodesSafePartitionsAndAtMostThreeQuestions",
+    "testBusySnapshotRequiresNullContent",
+    "testCanceledButUncheckedRemainsFollowing",
+    "testChangedSourceInvalidatesVerifiedPresentation",
+    "testCompleteReadCanRemoveAnEndedDecision",
+    "testCoreCommandBoundaryParsesOnlyStdout",
+    "testCountsAndPauseAreIndependentFromHumanDecisions",
+    "testCrossChannelInvalidationBlocksOldSearchAndHandoffResponses",
+    "testDeliveryRequiresReceiptTimestampForTerminalStage",
+    "testExperimentStatusRefreshFailurePreservesEveryFeedbackSubmissionCheckpoint",
+    "testFeatureFlagDefaultsOffAndRouteCommandKFocusesFind",
+    "testFeedbackBindingFreezesAtTerminalAndRetainsOnlyExactTransportRetry",
+    "testFeedbackStatusRefreshPendingIgnoresStaleExperimentChannelResponse",
+    "testFeedbackSubmissionCheckpointSurvivesNavigationAndStalePresentationToken",
+    "testFiltersPreserveRealCategoriesAndDeduplicate",
+    "testFindProjectAndNinetyDayFiltersUseExplicitStdinRange",
+    "testHandoffRenderCheckpointRejectsOldSameReferenceGeneration",
+    "testIdlePublicationExpiredAndFutureRequestsCannotQuitApp",
+    "testIdlePublicationInteractionStaysProtectedAfterWindowCloses",
+    "testIdlePublicationUntouchedBackgroundCanYieldForFreshRequest",
+    "testIdlePublicationWindowAndDialogAndActiveAppPreventExit",
+    "testIndependentRuntimeTrustLossClearsAndInvalidatesOldResponses",
+    "testLocalHandoffContainsOnlyVerifiedSources",
+    "testMalformedSnapshotDoesNotBecomeZeroOrComplete",
+    "testMemoryCandidatesAreSummaryOnlyAndWriterDisabled",
+    "testNegativeFeedbackCannotClaimAWin",
+    "testOldActionCannotMatchReopenedOrRevisedPane",
+    "testOnlyOfferedBoundOptionsAreSelectableWithExactLabels",
+    "testOrdinaryHandoffFailurePreservesDraftAndDoesNotImplyWithdrawal",
+    "testOwnerActionAndFeedbackBodiesNeverEnterArguments",
+    "testPaneChildOwnsItsReadAndKeepsParentAnchor",
+    "testPartialReadPrefersNewEvidenceAndDoesNotEraseMissingRows",
+    "testPresentationCopyNeverLeaksCoreReasonCodes",
+    "testProductExperimentStatusIsStrictPublicProjection",
+    "testProductExperimentTransportFailureClearsEveryTrustedSurface",
+    "testQueuedPreviewFeedbackAuthorizationCannotCallServiceForReplacementHandoff",
+    "testQuickCaptureRequiresExplicitOwnerAndRejectsUnsafeText",
+    "testResolvedDoesNotClaimNaturalEffectVerification",
+    "testResumeTimerUsesMonotonicGenerationAndExactBindings",
+    "testRootRefreshGenerationRejectsOlderRequestChains",
+    "testScopeWithdrawalInvalidatesEveryPaneAndPendingDraftSave",
+    "testSearchQueryTravelsOnlyThroughBoundedStdin",
+    "testSemanticHandoffRejectionDoesNotClearTrustedConsoleState",
+    "testServiceQueryUnavailableClearsTrustedStateAndKeepsItsReason",
+    "testSnapshotOwnerActionsRequireEnvelopeAndCapability",
+    "testSnapshotRejectsInformationInsufficientAndBoundsConfirmationInbox",
+    "testSnapshotRejectsRawAccessAndInternalIdentifiers",
+    "testSnapshotStartedBeforeSourceWithdrawalCannotRestoreItsRows",
+    "testStaleAndCancelledResponsesCannotOverwriteNewerState",
+    "testStatusAutomaticFullTickCoalescesWithCurrentFullRead",
+    "testStatusExplicitFullDuringFullAwaitsFreshReadAfterCurrentRead",
+    "testStatusFullRequestsDuringQuickWaitForOneSerialFullRead",
+    "testStatusQuickTrustLossAwaitsOneFullAttemptWithoutFailureLoop",
+    "testSystemHealthResolverUsesOneThreeStatePolicy",
+    "testUnavailableProductExperimentCannotRetainBinding",
+    "testUnknownReadRetainsAllOldRowsWithoutVerifiedCount",
+    "testUnknownSubmissionRemainsBlockedAfterPaneCloses",
+    "testUnreadableHandoffClearsEveryTrustedSurface",
+    "testUnreadableTransitionClearsEveryTrustedSurface",
+    "testWaitingAndRecurrenceAreNotHumanChoices",
+    "testWithdrawnHandoffCannotReturnThroughDelayedSaveOrDisappear",
+    "testWithdrawnNestedSourceDisappearsAcrossScopesWithoutAZeroBadge"
+  ]
+}

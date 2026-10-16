@@ -1,0 +1,252 @@
+{
+  "upstream": "https://github.com/NousResearch/hermes-agent",
+  "version": "0.21.0",
+  "observed_at": "2026-09-08",
+  "source_path": "hermes_cli/kanban_db.py",
+  "source_sha256": "4a4495bb23e5f5c417d4259d759db5acbfc54d9043f1cd46b56724dbcc8a5fe0",
+  "source_revision": null,
+  "revision_note": "Local source directory has no Git metadata; source hash is the verified pin, version read from hermes_cli/__init__.py. Do not infer commit from older planning text.",
+  "capsule_sha256": "2d78766d8facf2b8a3e66b4e374810364411da11943bfe3107c8aa67a7b4d850",
+  "selected_nodes": {
+    "VALID_INITIAL_STATUSES": {
+      "source_lines": [
+        103,
+        103
+      ],
+      "sha256": "af6ede49cb1072334f129df36ba3d3a334e2a9566f92aed770e0e64956ab6ecd"
+    },
+    "VALID_WORKSPACE_KINDS": {
+      "source_lines": [
+        135,
+        135
+      ],
+      "sha256": "7d6a072cb40bb6249038dcc3d6c4a155e0a6eaf20aa3acf31a4f764aeacf1dd7"
+    },
+    "Task": {
+      "source_lines": [
+        1053,
+        1238
+      ],
+      "sha256": "9b77fc168c11aa56f0c42bb4fb6b66eb2be2a74584bf8c0536862cea27f00152"
+    },
+    "Run": {
+      "source_lines": [
+        1242,
+        1292
+      ],
+      "sha256": "4d27166a904c983ef1262f14f5de477269f8261df8b4d3553d20450ac7670043"
+    },
+    "SCHEMA_SQL": {
+      "source_lines": [
+        1332,
+        1527
+      ],
+      "sha256": "df6749ef0df7da0f70e3d6e4e0c1c1554dc24ffdc7e80d5d45287d499d57d673"
+    },
+    "_BUSY_MAX_RETRIES": {
+      "source_lines": [
+        3031,
+        3031
+      ],
+      "sha256": "898bc976eac533c781ab3a3ba41682e361008f215da9736d1d273727c1e74662"
+    },
+    "_BUSY_RETRY_MIN_S": {
+      "source_lines": [
+        3032,
+        3032
+      ],
+      "sha256": "e8708bccdaf4312349a774014fdc8aa787dc2bc5e3eec64c6996aff16225d451"
+    },
+    "_BUSY_RETRY_MAX_S": {
+      "source_lines": [
+        3033,
+        3033
+      ],
+      "sha256": "fc90cf99c3d473f438fdcd4e2d074bc1f7b0fa3f4de3a090e109a7bc7f553cb4"
+    },
+    "_is_busy_error": {
+      "source_lines": [
+        3036,
+        3040
+      ],
+      "sha256": "ff239b967cd1f971a2cbce2f09c22bea676c6dd6c617042849dee63d67b80739"
+    },
+    "_execute_boundary_with_retry": {
+      "source_lines": [
+        3043,
+        3051
+      ],
+      "sha256": "ef4606d291c455232a36b020863e0db204efb1076ecfafff2fae911ebe6f7296"
+    },
+    "write_txn": {
+      "source_lines": [
+        3055,
+        3126
+      ],
+      "sha256": "5ec8f63f1a842563497671bbfdf87edb0b9f2151f72672bfdf8a413d6c0058a2"
+    },
+    "_new_task_id": {
+      "source_lines": [
+        3133,
+        3143
+      ],
+      "sha256": "368566569c334015d0e4cb13481c107e9308ab88b31f294bcc2dec66b02515e4"
+    },
+    "_claimer_id": {
+      "source_lines": [
+        3146,
+        3153
+      ],
+      "sha256": "147eb78b520faccbc05e2c1cbb87ea09f7932e11e9ea8e20448d787e0bee07a7"
+    },
+    "create_task": {
+      "source_lines": [
+        3169,
+        3575
+      ],
+      "sha256": "5c46a5639aa6d8335f7531641b3db6b588c1529fe3611b770b871222f09cbac8"
+    },
+    "_find_missing_parents": {
+      "source_lines": [
+        3578,
+        3588
+      ],
+      "sha256": "9641e19c2345df7045634d411f440e413618dfa59517bbd6a4c8ef2735757322"
+    },
+    "_inherit_notify_subs": {
+      "source_lines": [
+        3591,
+        3639
+      ],
+      "sha256": "de6c88d6d04468af0dce23969ea3563ab1ccd2669fb22faa7a96eeb8e2098a0e"
+    },
+    "get_task": {
+      "source_lines": [
+        3642,
+        3644
+      ],
+      "sha256": "f5c40c338e39327ea653fb5fdce2ea6778f0906fb675b94ea73bf559f6eb5062"
+    },
+    "_append_event": {
+      "source_lines": [
+        4311,
+        4332
+      ],
+      "sha256": "2ee69b001695210d52a33e3dde0e69aec17dc35e8a0ca7b10c891cece4ad54ec"
+    },
+    "_end_run": {
+      "source_lines": [
+        4335,
+        4389
+      ],
+      "sha256": "4b9c6e8e62553e438b45f4324ba7cbd6e67821acc8948d658c54f8e3721d097b"
+    },
+    "_current_run_id": {
+      "source_lines": [
+        4392,
+        4396
+      ],
+      "sha256": "54d11caabb0e6539c335ddfb4a6d57611bc8bb22ea34c940fef68433cb9df43b"
+    },
+    "_synthesize_ended_run": {
+      "source_lines": [
+        4399,
+        4447
+      ],
+      "sha256": "397199363cb3466553ecda26f3e680e57e8f4fc4a17e53274bfa2e23fce72e16"
+    },
+    "_has_sticky_block": {
+      "source_lines": [
+        4454,
+        4489
+      ],
+      "sha256": "422165a1e217eb919fd9255b0d79151d6c23c33b46b5d1b6c1670e3181d4a1ab"
+    },
+    "_resume_status_from_events": {
+      "source_lines": [
+        4492,
+        4518
+      ],
+      "sha256": "78baea34d768a1a8a34a695b5465f335db8b04cc5cba8ddae6d72f6e11eaf095"
+    },
+    "recompute_ready": {
+      "source_lines": [
+        4521,
+        4610
+      ],
+      "sha256": "8ee86d781fef7b01b4a59b0fc89659e7ffa05252a6403c26ab806906c38b5c2c"
+    },
+    "_parents_satisfied": {
+      "source_lines": [
+        4617,
+        4625
+      ],
+      "sha256": "02d9c737eb9f9614cd30dd3d00b793115e58090f82ad063ee60df68c21eb39dd"
+    },
+    "claim_task": {
+      "source_lines": [
+        4628,
+        4747
+      ],
+      "sha256": "c97656d06e6ae30b6b8b23761808cec2103fcab19ef20cf922211dcd69a93c78"
+    },
+    "_verify_created_cards": {
+      "source_lines": [
+        5227,
+        5299
+      ],
+      "sha256": "8718d288029518799ab0ee2128de450c65627cfbd5c9911ebd219ab487859d7b"
+    },
+    "_TASK_ID_PROSE_RE": {
+      "source_lines": [
+        5305,
+        5305
+      ],
+      "sha256": "d340bdee50f832b8c933175c31a9eb0625bf4150a83630d4cf93b3fc4b76d886"
+    },
+    "_scan_prose_for_phantom_ids": {
+      "source_lines": [
+        5308,
+        5338
+      ],
+      "sha256": "18c34473f60b1912506dea37497856a3c4589b44071f462b69c2888f2c901abc"
+    },
+    "HallucinatedCardsError": {
+      "source_lines": [
+        5341,
+        5356
+      ],
+      "sha256": "99668e09e400f8e44b6a1024bc2f68b424b86cf015e8527af05a9e27ba3a0462"
+    },
+    "complete_task": {
+      "source_lines": [
+        5363,
+        5603
+      ],
+      "sha256": "8be06ed20a5e9cce3d3bd9e8d84fcb89bc1bc2ba8116ab3bd5ec6c19a4b65cd9"
+    },
+    "DEFAULT_FAILURE_LIMIT": {
+      "source_lines": [
+        7978,
+        7978
+      ],
+      "sha256": "200a7002abb247b659e9fbc39fc6bf3965ed5cd789f3f7aa23d04e1971172434"
+    },
+    "_clear_failure_counter": {
+      "source_lines": [
+        9378,
+        9393
+      ],
+      "sha256": "cc879cd229ebf805551be3235c53ab3d92005afedc5eb7f4ab85401907fb1f77"
+    }
+  },
+  "changes": [
+    "Extract selected database schema/classes/functions with ast.unparse; omit function docstrings only.",
+    "Explicitly allow savepoint nesting in native database helpers. Outer controller transaction owns commit; this change is safe only because all filesystem/hooks/config paths are disabled.",
+    "Replace selected lazy import statements with unconditional RuntimeError, no user profile or project imports.",
+    "Sealed replacement helpers: reasoning/profile overrides reject non-None; board metadata empty; board name isolated; explicit bounded TTL; hooks and workspace cleanup inert; artifact metadata rejected.",
+    "File-length check uses SQLite page metadata and stat only; never opens database outside SQLite while live.",
+    "Do not expose this capsule directly to model executors. Native lifecycle CAS and run records are wrapped by controller epochs, leases and grants."
+  ],
+  "license": "MIT; LICENSE.hermes"
+}
