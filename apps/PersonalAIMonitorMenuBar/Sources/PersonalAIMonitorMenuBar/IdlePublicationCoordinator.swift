@@ -17,7 +17,7 @@ final class IdlePublicationCoordinator {
             self?.userInteraction(); return event
         }
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.poll() }
+            Task { @MainActor [weak self] in self?.poll() }
         }
     }
     private func poll() {

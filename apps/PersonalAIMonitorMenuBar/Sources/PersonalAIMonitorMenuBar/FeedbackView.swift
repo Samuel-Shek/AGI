@@ -157,6 +157,7 @@ struct FeedbackView: View {
     }
 }
 
+@MainActor
 private struct FeedbackDetailView: View {
     let runner: CoreRunner
     let item: FeedbackIncident
