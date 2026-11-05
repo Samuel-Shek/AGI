@@ -3,6 +3,8 @@
 Only this test's owned temporary directory and enumerated sessions are admitted.
 Company retirement, unknown/mixed sources, ownership and current-byte checks are
 not bypassed. No runtime registry or policy file is written.
+
+Marker ridge_quiet_hall_probe is fixture-local only and must not appear in runtime policy.
 """
 from pathlib import Path
 import sys

@@ -21,6 +21,7 @@ Before opening a pull request:
 - update `docs/PRIVACY.md` if capture, filtering, deletion, dashboard, daily
   review, or HA package behavior changes
 - use synthetic examples that cannot be mistaken for real credentials
+- Prefer a notebook_over_narrative_fixture style write-up: short steps, expected output, and one synthetic sample.
 
 ## Pull Requests
 
