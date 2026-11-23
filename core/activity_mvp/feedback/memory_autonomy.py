@@ -17,6 +17,22 @@ OPERATOR_PYTHON=Path.home()/'.hermes/hermes-agent/venv/bin/python'
 OPERATOR_ROOT=Path.home()/'.hermes/memory-review-center'
 
 
+def work_candidates(store, registry):
+    # Investigation-source admission alone does not grant a durable work row.
+    # Match the existing personal_store work predicate without broadening it.
+    candidates=memory_review_candidates(limit=None,state='all',display_root=store.root.parent)['items']
+    if personal_scope.company_stopped():
+        candidates=[c for c in candidates if c['memory_id'] in registry.get('bindings',{})
+                    and personal_scope.memory_admitted(c['memory_id'],{},registry)]
+    return candidates
+
+
+def unknown_execution(row):
+    return bool(row and (row['state'] in {'running','verifying'} or
+        row.get('result',{}).get('gap') in {'operator_interrupted_receipt_requires_recheck',
+            'operator_receipt_missing','operator_receipt_invalid','operator_receipt_version_mismatch'}))
+
+
 def apply(proposal, revision, should_continue=lambda: True):
     if not should_continue(): raise RuntimeError("autonomy_paused")
     process=subprocess.Popen([str(OPERATOR_PYTHON),'-m','review_center.autonomy'],cwd=OPERATOR_ROOT,
@@ -67,14 +83,15 @@ def _tick_original(store, limit=5):
     queue=WorkQueue(store)
     try:
         registry=load_registry()
-        candidates=memory_review_candidates(limit=None,state='all')['items']
+        candidates=work_candidates(store,registry)
     except (OSError,ValueError,MemoryReviewError) as exc:
         row=queue.enqueue('memory_system','source_access',sha(type(exc).__name__))
         if row['state']!='waiting_evidence':
             queue.update(row['id'],'waiting_evidence',summary='记忆审核来源暂不可用，系统等待恢复；不需要你猜测。',result={'error':type(exc).__name__})
         return {'enabled':True,'processed':0,'error':type(exc).__name__}
-    processed=0; applied=0
+    processed=0; applied=0; unknown=0
     known_items={r['reference']:r for r in queue.items('memory')}
+    unknown=sum(unknown_execution(known_items.get(c['memory_id'])) for c in candidates)
     operator_path=OPERATOR_ROOT/'review_center/autonomy.py'
     try: operator_version=sha(operator_path.read_bytes())
     except OSError: operator_version='unavailable'
@@ -85,6 +102,8 @@ def _tick_original(store, limit=5):
         # candidates are still watched so source changes invalidate old proof.
         if not personal_scope.memory_admitted(candidate['memory_id'],candidate,registry):continue
         known=known_items.get(candidate['memory_id'])
+        if unknown_execution(known) or (known and known['state']=='human_required'):
+            continue
         if candidate.get('review_state')=='decided':
             if not known: continue
             if not current_decision_is_automatic(candidate):
@@ -110,6 +129,8 @@ def _tick_original(store, limit=5):
         revision=sha([proof['revision'],runtime_revision])
         for entry in proof['evidence']:
             entry['summary']='已定位来源并核对版本。' if entry.get('valid') else '已查找直接来源，仍需核对具体事实。'
+        if sha(load_registry())!=sha(registry) or not personal_scope.memory_admitted(candidate['memory_id'],candidate,registry):
+            return {'enabled':True,'processed':processed,'applied':applied,'status':'partial','error':'memory_source_changed'}
         row=queue.enqueue('memory',candidate['memory_id'],revision)
         if row['processed_revision']==revision and row['state'] not in {'queued','investigating','running','verifying'}: continue
         processed+=1
@@ -122,16 +143,18 @@ def _tick_original(store, limit=5):
         try:
             if not active(store):
                 queue.update(row['id'],'queued',summary='自主处理已暂停，保留当前进度。');break
-            result=apply(proof['proposal'],proof['revision'],should_continue=lambda:active(store) and personal_scope.memory_admitted(candidate['memory_id'],candidate,load_registry()))
+            result=apply(proof['proposal'],proof['revision'],should_continue=lambda:active(store) and sha(load_registry())==sha(registry) and personal_scope.memory_admitted(candidate['memory_id'],candidate,registry))
             result['verification_summary']='已重新读取审核结果，来源与记忆版本匹配。'
             result['changes']='确认继续有效' if proof['proposal']['action']=='keep_active' else ('保留原文并标为历史' if proof['proposal']['action']=='mark_legacy' else '新建正确记忆并关联旧记录')
             queue.update(row['id'],'verified',summary='已通过审核中心处理，并重新读取结果核对。',
                 processed_revision=revision,result=result,attempts=row['attempts']+1)
             applied+=1
         except (RuntimeError,OSError,subprocess.SubprocessError) as exc:
-            queue.update(row['id'],'verifying' if str(exc)=='operator_interrupted_receipt_requires_recheck' else 'waiting_evidence',summary='处理没有完成，系统保留原始记录并等待可核对的新结果。',
+            unknown+=1
+            queue.update(row['id'],'verifying',summary='处理结果尚未核清，保留原始记录与操作身份，等待回执核对。',
                 processed_revision=revision,result={'gap':str(exc),'verification_summary':'尚未取得可核对的完成凭据。','next_trigger':'evidence_or_operator_recovery_changed'},attempts=row['attempts']+1)
-    return {'enabled':True,'processed':processed,'applied':applied,'total':len(candidates)}
+    return {'enabled':True,'processed':processed,'applied':applied,'total':len(candidates),
+            'status':'partial' if unknown else 'ok','unknown_results':unknown}
 
 
 def _tick_ranked(store, limit=5, ranking_client=None):
@@ -146,14 +169,15 @@ def _tick_ranked(store, limit=5, ranking_client=None):
     queue=WorkQueue(store)
     try:
         registry=load_registry()
-        candidates=memory_review_candidates(limit=None,state='all')['items']
+        candidates=work_candidates(store,registry)
     except (OSError,ValueError,MemoryReviewError) as exc:
         row=queue.enqueue('memory_system','source_access',sha(type(exc).__name__))
         if row['state']!='waiting_evidence':
             queue.update(row['id'],'waiting_evidence',summary='记忆审核来源暂不可用，系统等待恢复；不需要你猜测。',result={'error':type(exc).__name__})
         return {'enabled':True,'processed':0,'error':type(exc).__name__}
-    processed=0; applied=0
+    processed=0; applied=0; unknown=0
     known_items={r['reference']:r for r in queue.items('memory')}
+    unknown=sum(unknown_execution(known_items.get(c['memory_id'])) for c in candidates)
     operator_path=OPERATOR_ROOT/'review_center/autonomy.py'
     try: operator_version=sha(operator_path.read_bytes())
     except OSError: operator_version='unavailable'
@@ -167,6 +191,8 @@ def _tick_ranked(store, limit=5, ranking_client=None):
         # candidates are still watched so source changes invalidate old proof.
         if not personal_scope.memory_admitted(candidate['memory_id'],candidate,registry):continue
         known=known_items.get(candidate['memory_id'])
+        if unknown_execution(known) or (known and known['state']=='human_required'):
+            continue
         if candidate.get('review_state')=='decided':
             if not known: continue
             if not current_decision_is_automatic(candidate):
@@ -189,7 +215,7 @@ def _tick_ranked(store, limit=5, ranking_client=None):
             with Store(store.root,readonly=True) as current:
                 if not active(current):return False
             if sha(load_registry())!=sha(registry):return False
-            latest={c['memory_id']:c for c in memory_review_candidates(limit=None,state='all')['items']}
+            latest={c['memory_id']:c for c in work_candidates(store,load_registry())}
             return all(personal_scope.memory_admitted(e['candidate']['memory_id'],e['candidate'],load_registry()) and latest.get(e['candidate']['memory_id'],{}).get('candidate_fingerprint')==e['candidate']['candidate_fingerprint'] and sha(read_memory_text(e['candidate']['memory_id'],admission_registry=load_registry())['text'])==e['candidate']['content_sha256'] for e in prepared)
         except Exception:return False
     def may_send():
@@ -212,6 +238,8 @@ def _tick_ranked(store, limit=5, ranking_client=None):
             if memory is not None:continue
         for entry in proof['evidence']:
             entry['summary']='已定位来源并核对版本。' if entry.get('valid') else '已查找直接来源，仍需核对具体事实。'
+        if sha(load_registry())!=sha(registry) or not personal_scope.memory_admitted(candidate['memory_id'],candidate,registry):
+            return {'enabled':True,'processed':processed,'applied':applied,'status':'partial','error':'memory_source_changed'}
         row=queue.enqueue('memory',candidate['memory_id'],revision)
         if row['processed_revision']==revision and row['state'] not in {'queued','investigating','running','verifying'}: continue
         processed+=1
@@ -225,16 +253,18 @@ def _tick_ranked(store, limit=5, ranking_client=None):
         try:
             if not active(store):
                 queue.update(row['id'],'queued',summary='自主处理已暂停，保留当前进度。');break
-            result=apply(proof['proposal'],proof['revision'],should_continue=lambda:active(store) and personal_scope.memory_admitted(candidate['memory_id'],candidate,load_registry()))
+            result=apply(proof['proposal'],proof['revision'],should_continue=lambda:active(store) and sha(load_registry())==sha(registry) and personal_scope.memory_admitted(candidate['memory_id'],candidate,registry))
             result['verification_summary']='已重新读取审核结果，来源与记忆版本匹配。'
             result['changes']='确认继续有效' if proof['proposal']['action']=='keep_active' else ('保留原文并标为历史' if proof['proposal']['action']=='mark_legacy' else '新建正确记忆并关联旧记录')
             queue.update(row['id'],'verified',summary='已通过审核中心处理，并重新读取结果核对。',
                 processed_revision=revision,result=result,attempts=row['attempts']+1)
             applied+=1
         except (RuntimeError,OSError,subprocess.SubprocessError) as exc:
-            queue.update(row['id'],'verifying' if str(exc)=='operator_interrupted_receipt_requires_recheck' else 'waiting_evidence',summary='处理没有完成，系统保留原始记录并等待可核对的新结果。',
+            unknown+=1
+            queue.update(row['id'],'verifying',summary='处理结果尚未核清，保留原始记录与操作身份，等待回执核对。',
                 processed_revision=revision,result={'gap':str(exc),'verification_summary':'尚未取得可核对的完成凭据。','next_trigger':'evidence_or_operator_recovery_changed'},attempts=row['attempts']+1)
-    return {'enabled':True,'processed':processed,'applied':applied,'total':len(candidates)}
+    return {'enabled':True,'processed':processed,'applied':applied,'total':len(candidates),
+            'status':'partial' if unknown else 'ok','unknown_results':unknown}
 
 
 def tick(store, limit=5, *, ranking_client=None):

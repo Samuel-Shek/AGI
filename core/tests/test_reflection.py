@@ -52,6 +52,14 @@ class ReflectionTests(unittest.TestCase):
         with patch.object(analysis.model,'invoke',side_effect=invoke):return analysis.analyze(self.store,self.feedback,self.now)
     def seed(self):
         self.add('user','我还缺哪项证据才能决定？');self.add('assistant','已经回答了两项，但尚未给出可检查的依据。');self.add('user','同样两个方案，我仍没有决策标准。');self.scan()
+    def test_real_invoke_does_not_treat_its_own_reserved_reflection_as_duplicate(self):
+        self.seed()
+        self.feedback.set('model_capability', {'enabled':True})
+        with patch.object(analysis.model, 'runtime_binary', return_value='/usr/bin/true'), patch.object(analysis.model.subprocess, 'Popen', side_effect=RuntimeError('synthetic launch reached')) as launch:
+            with self.assertRaisesRegex(RuntimeError, 'synthetic launch reached'):
+                analysis.analyze(self.store, self.feedback, self.now)
+        launch.assert_called_once()
+        self.assertEqual(self.store.rows('SELECT state FROM calls')[0]['state'], 'unknown')
     def test_primary_roles_window_and_credentials(self):
         self.add('user','旧记录',15*86400);self.add('tool','不可纳入');self.add('user','api_key: '+('sk-'+('syntheticcredential'*2))+' 我希望继续比较。');self.add('assistant','先确认目前已知信息。');self.scan()
         rows=self.store.rows('SELECT * FROM turns');self.assertEqual([r['role'] for r in rows],['user','assistant'])
@@ -68,6 +76,113 @@ class ReflectionTests(unittest.TestCase):
     def test_not_found_is_valid_without_notice(self):
         self.seed();r,_,_,_=self.result('not_found');self.run_model(r);self.assertEqual(self.store.rows('SELECT * FROM insights'),[])
         self.assertEqual(self.store.get('last_analysis')['judgment'],'not_found')
+
+    def add_independent_prepare_discussion(self):
+        path=self.path.with_name('sixth.jsonl')
+        lines=[{'type':'session_meta','payload':{'id':'synthetic-sixth-context','source':'cli'}},
+               {'timestamp':self.now,'type':'response_item','payload':{'type':'message','role':'user','content':[{'type':'input_text','text':'另一段讨论的新证据与现实限制。'}]}}]
+        path.write_text(''.join(packed(x)+'\n' for x in lines));path.chmod(0o600);self.scan()
+        first=self.store.rows("SELECT context_id FROM turns WHERE session='synthetic-owner-session' LIMIT 1")[0]['context_id']
+        self.store.conn.execute('UPDATE contexts SET updated=? WHERE id=?',(self.now-1,first))
+        return first
+
+    def test_prepare_quota_keeps_verified_prefix_and_other_discussion_pending(self):
+        from activity_mvp import local_checks
+        real_batch=local_checks.ScanBatch
+        self.seed();first=self.add_independent_prepare_discussion()
+        original_calls=self.store.rows('SELECT * FROM calls');original_budget=self.feedback.rows('SELECT * FROM budget')
+        with patch.object(local_checks,'ScanBatch',side_effect=lambda:real_batch(0)),patch.object(analysis,'context_complete',wraps=analysis.context_complete) as complete:
+            data,known,through=analysis.payload(self.store,self.now)
+            self.assertEqual([c['context_id'] for c in data['current_contexts']],[first])
+            self.assertTrue(data['current_contexts'][0]['complete']);self.assertIn(first,[call.args[1] for call in complete.call_args_list])
+            self.assertTrue(data['coverage'].get('preparation_limited'));self.assertEqual(data['historical_contexts'],[])
+            self.assertTrue(data['suppression_complete']);self.assertEqual(set(through),{first})
+            self.assertEqual(self.store.rows('SELECT * FROM calls'),original_calls);self.assertEqual(self.feedback.rows('SELECT * FROM budget'),original_budget)
+            result,seen=self.run_not_found_batch()
+        self.assertEqual(result['processed'],1);self.assertEqual(len(seen[0]['current_contexts']),1)
+        other=[c for c in self.store.rows('SELECT id,processed_seq FROM contexts') if c['id']!=first]
+        self.assertEqual(len(other),1);self.assertEqual(other[0]['processed_seq'],0)
+        self.assertTrue(analysis.ready(self.store));self.assertFalse(self.store.rows('SELECT * FROM insights'))
+        self.assertIn('历史',self.store.get('coverage_gap'))
+
+    def test_prepare_quota_retains_suppression_and_related_active_evidence(self):
+        from activity_mvp import local_checks
+        real_batch=local_checks.ScanBatch
+        self.seed();first=self.add_independent_prepare_discussion()
+        rows=self.store.rows("SELECT * FROM turns WHERE context_id=? AND role='user' ORDER BY seq",(first,));known={r['id']:r for r in rows}
+        evidence=[analysis.quote(self.store,{'turn_id':r['id'],'quote':r['text'],'attribution':'user_statement'},known) for r in rows]
+        for state in ('active','muted','rejected'):
+            item={'id':'quota-'+state,'state':state,'judgment':'preliminary',**{k:'需要实际证据核对。' for k in analysis.FIELDS},
+                  'question':'我应核对哪些具体条件？','evidence':packed(evidence),'fingerprint':'quota-'+state,'created':self.now,'updated':self.now}
+            self.store.conn.execute('INSERT INTO insights('+','.join(item)+') VALUES('+','.join('?' for _ in item)+')',tuple(item.values()))
+        with patch.object(local_checks,'ScanBatch',side_effect=lambda:real_batch(0)):
+            data,known,_=analysis.payload(self.store,self.now)
+        self.assertTrue(data['coverage'].get('preparation_limited'))
+        self.assertEqual({i['state'] for i in data['previous_insights']},{'active','muted','rejected'})
+        active=next(i for i in data['previous_insights'] if i['state']=='active')
+        self.assertTrue(active['evidence']);self.assertTrue(all(e['id'] in known for e in active['evidence']))
+        self.assertTrue(data['suppression_complete']);self.assertEqual(data['historical_contexts'],[])
+
+    def test_excluded_prefix_skips_only_redundant_gap_scan_before_locked_admission(self):
+        self.seed();self.fail_model();self.add_independent_prepare_discussion()
+        old_call=self.store.rows("SELECT * FROM calls WHERE state='unknown'")[0]
+        old_budget=self.feedback.rows('SELECT * FROM budget')[0]
+        old_watermark=self.store.rows("SELECT id,processed_seq FROM contexts WHERE session='synthetic-owner-session'")[0]
+        real_prior=analysis.submitted_inputs
+        with patch.object(analysis,'submitted_inputs',wraps=real_prior) as prior,patch.object(analysis,'unresolved_range',wraps=analysis.unresolved_range) as gaps:
+            def invoke(feedback,prompt,schema,**kw):
+                self.assertEqual(gaps.call_count,1)
+                self.assertEqual(prior.call_count,1);kw['admission_check']();self.assertEqual(prior.call_count,2)
+                data=json.loads(prompt[len(analysis.SYSTEM)+1:]);self.assertEqual(len(data['current_contexts']),1)
+                self.assertNotEqual(data['current_contexts'][0]['context_id'],old_watermark['id'])
+                key=feedback.reserve('analysis');kw['on_reserved'](key);feedback.settle(key,'settled')
+                return {'contexts':[{'context_id':c['context_id'],'summary':'新的独立材料。','evidence':[]} for c in data['current_contexts']],
+                        'insight':{'related_insight':'','judgment':'not_found',**{k:'' for k in analysis.FIELDS},'evidence':[]},'reviews':[]},key
+            with patch.object(analysis.model,'invoke',side_effect=invoke):result=analysis.analyze(self.store,self.feedback,self.now)
+        self.assertEqual(result['processed'],1);self.assertEqual(gaps.call_count,2)
+        self.assertEqual(self.store.rows('SELECT * FROM calls WHERE id=?',(old_call['id'],))[0],old_call)
+        self.assertEqual(self.feedback.rows('SELECT * FROM budget WHERE id=?',(old_budget['id'],))[0],old_budget)
+        self.assertEqual(self.store.rows('SELECT id,processed_seq FROM contexts WHERE id=?',(old_watermark['id'],))[0],old_watermark)
+
+    def test_prepare_quota_propagates_the_original_hard_deadline(self):
+        from activity_mvp import local_checks
+        real_batch=local_checks.ScanBatch;tokens=[]
+        self.seed()
+        class ExpiringBatch(real_batch):
+            def complete(batch):
+                super().complete();tokens.append(local_checks._current.set(local_checks.Budget('reflection_prepare',0)))
+        try:
+            with patch.object(local_checks,'ScanBatch',ExpiringBatch),patch.object(analysis.model,'invoke',side_effect=AssertionError('model after deadline')):
+                with self.assertRaises(local_checks.LocalCheckTimeout):analysis.payload(self.store,self.now)
+        finally:
+            for token in reversed(tokens):local_checks._current.reset(token)
+        self.assertFalse(self.feedback.rows('SELECT * FROM budget'));self.assertFalse(self.store.rows('SELECT * FROM calls'))
+
+    def test_settlement_keeps_pre_review_insight_provenance(self):
+        self.seed()
+        turn=self.store.rows("SELECT * FROM turns WHERE role='user' ORDER BY seq")[0]
+        evidence={'id':turn['id'],'role':turn['role'],'observed':turn['observed'],'quote':turn['text']}
+        item={'id':'prior-insight','state':'active','judgment':'preliminary',
+            **{k:'原有待核查假设。' for k in analysis.FIELDS},
+            'evidence':packed([evidence]),'fingerprint':'prior-evidence','created':self.now,'updated':self.now}
+        item['question']='我需要更多证据吗？'
+        self.store.conn.execute('INSERT INTO insights('+','.join(item)+') VALUES('+','.join('?' for _ in item)+')',tuple(item.values()))
+        result,data,_,_=self.result('not_found')
+        self.assertEqual([v['id'] for v in data['previous_insights']],['prior-insight'])
+        result['reviews']=[{'id':'prior-insight','action':'withdraw','reason':'新材料足以撤回原假设。',
+            'evidence':[{'turn_id':turn['id'],'quote':turn['text'],'attribution':'user_statement'}]}]
+        submitted={}
+        def capture():
+            submitted.update(json.loads(self.store.rows('SELECT detail FROM calls')[0]['detail']))
+        self.run_model(result,capture)
+        call=self.store.rows('SELECT * FROM calls')[0]
+        self.assertEqual(call['state'],'settled')
+        detail=json.loads(call['detail'])
+        self.assertIn('input_sources',detail)
+        self.assertEqual(detail['input_sources'],submitted['input_sources'])
+        current=self.store.rows("SELECT * FROM insights WHERE id='prior-insight'")[0]
+        self.assertEqual(current['state'],'withdrawn')
+        self.assertNotEqual(detail['input_sources']['insights'][0]['fingerprint'],digest(current))
     def test_fabricated_quote_role_and_quote_material_rejected(self):
         self.seed();r,data,known,through=self.result();r['insight']['evidence'][0]['quote']='不存在的原话'
         with self.assertRaises(ValueError):analysis.validate(self.store,r,known,through,data)
@@ -109,6 +224,112 @@ class ReflectionTests(unittest.TestCase):
         self.assertEqual(len({json.loads(p['reference'])['message_id'] for p in pieces[:-1]}),1)
         r,data,_,_=self.result('not_found');self.assertGreater(data['coverage']['partial_current'],0);self.run_model(r)
         self.assertTrue(analysis.ready(self.store));r,data,_,_=self.result('not_found');self.assertEqual(data['coverage']['partial_current'],0);self.run_model(r);self.assertFalse(analysis.ready(self.store))
+    def test_payload_stops_fetching_long_context_at_input_boundary(self):
+        self.add('user','甲'*100000);self.scan()
+        available=self.store.conn.execute('SELECT count(*) FROM turns').fetchone()[0]
+        execute=self.store.conn.execute;tracked=[]
+        class TrackedCursor:
+            def __init__(self,cursor):self.cursor=cursor;self.reads=0;self.closed=False
+            def __getattr__(self,key):return getattr(self.cursor,key)
+            def __iter__(self):return self
+            def __next__(self):
+                row=next(self.cursor);self.reads+=1;return row
+            def close(self):self.closed=True;self.cursor.close()
+        def tracked_execute(sql,args=()):
+            cursor=execute(sql,args)
+            if 'WHERE context_id=? AND observed>=? AND seq>?' in sql:
+                cursor=TrackedCursor(cursor);tracked.append(cursor)
+            return cursor
+        with patch.object(self.store.conn,'execute',side_effect=tracked_execute):
+            data,known,through=analysis.payload(self.store,self.now)
+        self.assertEqual(len(tracked),1)
+        self.assertGreater(available,10)
+        self.assertLess(tracked[0].reads,available)
+        self.assertTrue(tracked[0].closed)
+        self.assertEqual(data['coverage']['partial_current'],1)
+        self.assertEqual(data['coverage']['complete_current'],0)
+        self.assertLessEqual(len((analysis.SYSTEM+'\n'+packed(data)).encode()),analysis.MAX_BYTES)
+        selected=data['current_contexts'][0]['turns']
+        self.assertEqual(len(known),len(selected))
+        self.assertEqual(through[data['current_contexts'][0]['context_id']],
+                         max(known[t['turn_id']]['seq'] for t in selected))
+
+    def test_full_batch_does_not_probe_more_contexts_to_fill_spare_bytes(self):
+        self.add('user','甲'*15000)
+        for number,(session,text) in enumerate((('synthetic-other','乙'*4000),('synthetic-history','后续讨论仍要留待下一批。')),1):
+            path=self.path.with_name(session.removeprefix('synthetic-')+'.jsonl')
+            lines=[{'type':'session_meta','payload':{'id':session,'source':'cli'}},
+                {'timestamp':self.now+number,'type':'response_item','payload':{'type':'message','role':'user','content':[{'type':'input_text','text':text}]}}]
+            path.write_text(''.join(packed(line)+'\n' for line in lines));path.chmod(0o600)
+        self.scan()
+        before=self.store.rows('SELECT id,processed_seq,summary FROM contexts ORDER BY id')
+        checked=[];original=analysis.reference_current
+        def observe(ref,**kwargs):
+            checked.append(ref.get('session'));return original(ref,**kwargs)
+        with patch.object(analysis,'reference_current',side_effect=observe):
+            data,known,through=analysis.payload(self.store,self.now)
+        self.assertNotIn('synthetic-history',checked)
+        self.assertEqual(len(data['current_contexts']),1)
+        self.assertTrue(data['current_contexts'][0]['complete'])
+        self.assertEqual(set(through),{data['current_contexts'][0]['context_id']})
+        self.assertTrue(known)
+        self.assertEqual(self.store.rows('SELECT id,processed_seq,summary FROM contexts ORDER BY id'),before)
+        self.assertLessEqual(len((analysis.SYSTEM+'\n'+packed(data)).encode()),analysis.MAX_BYTES)
+        self.assertIn('输入限额',self.store.get('coverage_gap',''))
+
+    def test_invalid_reference_is_not_a_full_batch_boundary(self):
+        self.add('user','第一段来源待重新核对。')
+        path=self.path.with_name('other.jsonl')
+        lines=[{'type':'session_meta','payload':{'id':'synthetic-other','source':'cli'}},
+            {'timestamp':self.now+1,'type':'response_item','payload':{'type':'message','role':'user','content':[{'type':'input_text','text':'另一段来源有效的独立讨论。'}]}}]
+        path.write_text(''.join(packed(line)+'\n' for line in lines));path.chmod(0o600)
+        self.scan();original=analysis.reference_current
+        def current(ref,**kwargs):
+            return False if ref.get('session')=='synthetic-owner-session' else original(ref,**kwargs)
+        with patch.object(analysis,'reference_current',side_effect=current),patch.object(analysis,'invalidate_input'):
+            data,known,through=analysis.payload(self.store,self.now)
+        self.assertEqual(len(through),1)
+        self.assertTrue(known)
+        self.assertTrue(all(row['session']=='synthetic-other' for row in known.values()))
+    def test_payload_closes_remaining_cursor_when_deadline_interrupts_iteration(self):
+        from activity_mvp.local_checks import LocalCheckTimeout
+        self.seed();execute=self.store.conn.execute;tracked=[]
+        class InterruptedCursor:
+            def __init__(self,cursor):self.cursor=cursor;self.closed=False
+            def __getattr__(self,key):return getattr(self.cursor,key)
+            def __iter__(self):return self
+            def __next__(self):raise LocalCheckTimeout('reflection_prepare')
+            def close(self):self.closed=True;self.cursor.close()
+        def interrupt(sql,args=()):
+            cursor=execute(sql,args)
+            if 'WHERE context_id=? AND observed>=? AND seq>?' in sql:
+                cursor=InterruptedCursor(cursor);tracked.append(cursor)
+            return cursor
+        with patch.object(self.store.conn,'execute',side_effect=interrupt):
+            with self.assertRaises(LocalCheckTimeout):analysis.payload(self.store,self.now)
+        self.assertEqual(len(tracked),1);self.assertTrue(tracked[0].closed)
+        self.assertEqual(self.store.rows('SELECT processed_seq FROM contexts')[0]['processed_seq'],0)
+    def test_payload_closes_remaining_cursor_before_source_invalidation(self):
+        self.seed();execute=self.store.conn.execute;tracked=[]
+        class ClosingCursor:
+            def __init__(self,cursor):self.cursor=cursor;self.closed=False
+            def __getattr__(self,key):return getattr(self.cursor,key)
+            def __iter__(self):return self
+            def __next__(self):return next(self.cursor)
+            def close(self):self.closed=True;self.cursor.close()
+        def track(sql,args=()):
+            cursor=execute(sql,args)
+            if 'WHERE context_id=? AND observed>=? AND seq>?' in sql:
+                cursor=ClosingCursor(cursor);tracked.append(cursor)
+            return cursor
+        def invalidate(store,reference):
+            self.assertTrue(tracked and all(c.closed for c in tracked))
+        with patch.object(self.store.conn,'execute',side_effect=track), \
+             patch.object(analysis,'reference_current',return_value=False), \
+             patch.object(analysis,'invalidate_input',side_effect=invalidate) as invalidated:
+            data,known,through=analysis.payload(self.store,self.now)
+        invalidated.assert_called_once();self.assertEqual(through,{})
+        self.assertEqual(data['coverage']['complete_current'],0)
     def test_pause_skips_reading_and_notification(self):
         self.seed();before=self.store.get('last_scan');self.feedback.set('paused',True)
         with patch.object(sources,'jsonl',side_effect=AssertionError('read after pause')),patch.object(service.subprocess,'run',side_effect=AssertionError('notify after pause')):
@@ -322,6 +543,7 @@ class ReflectionTests(unittest.TestCase):
         self.assertEqual(self.store.rows('SELECT processed_seq FROM contexts WHERE id=?',(original['id'],))[0]['processed_seq'],0)
         self.assertEqual(len(self.feedback.rows('SELECT * FROM budget')),2)
 
+    @patch.object(analysis.personal_scope,'company_stopped',new=lambda:False)
     def test_legacy_private_input_is_hashed_without_adopting_result_or_spending(self):
         self.seed();self.fail_model();call=self.store.rows('SELECT * FROM calls')[0]
         data,_,_=analysis.payload(self.store,self.now);run=self.feedback.root/'runs'/call['id']/'1234567890123456789';run.mkdir(parents=True,mode=0o700)
@@ -361,6 +583,7 @@ class ReflectionTests(unittest.TestCase):
         self.store.conn.execute('UPDATE calls SET detail=?',(packed({'reason':'RuntimeError'}),))
         return call,run
 
+    @patch.object(analysis.personal_scope,'company_stopped',new=lambda:False)
     def test_owner_stop_before_legacy_gate_prevents_original_read(self):
         self.legacy_run();real_gate=analysis.gate
         def stop_at_gate(*args,**kwargs):
@@ -371,6 +594,7 @@ class ReflectionTests(unittest.TestCase):
                 analysis.submitted_inputs(self.store,self.feedback,self.store.enabled)
         self.assertNotIn('input_fingerprint',json.loads(self.store.rows('SELECT detail FROM calls')[0]['detail']))
 
+    @patch.object(analysis.personal_scope,'company_stopped',new=lambda:False)
     def test_legacy_alias_swap_is_rejected_on_actual_open(self):
         _,run=self.legacy_run();outside=self.root/'unrelated-private.txt';outside.write_text('outside authorized request');outside.chmod(0o600)
         real_open=os.open;real_read=os.read
@@ -460,6 +684,8 @@ class ReflectionTests(unittest.TestCase):
         old=self.feedback.rows('SELECT * FROM budget')
         self.store.conn.close();self.store=Store(self.root/'reflection')
         result,seen=self.run_not_found_batch();self.assertFalse(seen);self.assertEqual(self.feedback.rows('SELECT * FROM budget'),old)
+        self.assertEqual(result['reason'],'prior_input_unresolved')
+        self.assertEqual(result['status'],'blocked')
         self.add('user','新的证据已经到齐，下一步检查实施结果。');self.scan()
         result,seen=self.run_not_found_batch();self.assertEqual(result['processed'],1)
         self.assertEqual(len(seen[0]['current_contexts'][0]['turns']),1)
@@ -560,7 +786,7 @@ class ReflectionTests(unittest.TestCase):
         self.store.set('source_parser_version',1);self.scan()
         self.assertFalse(set(ids.values())&{r['id'] for r in self.store.rows('SELECT * FROM turns')})
         budgets=self.feedback.rows('SELECT * FROM budget');result,seen=self.run_not_found_batch();self.assertFalse(seen)
-        self.assertEqual(result['reason'],'prior_input_unresolved');self.assertEqual(self.feedback.rows('SELECT * FROM budget'),budgets)
+        self.assertEqual(result['reason'],'prior_input_unverifiable');self.assertEqual(self.feedback.rows('SELECT * FROM budget'),budgets)
         self.assertEqual(self.store.rows('SELECT processed_seq FROM contexts')[0]['processed_seq'],0)
 
     def test_unknown_summary_completion_cannot_replay_with_metadata_change(self):
@@ -568,7 +794,19 @@ class ReflectionTests(unittest.TestCase):
         for _ in range(1501):self.lines.append({'type':'synthetic_tool_event'})
         self.path.write_text(''.join(packed(x)+'\n' for x in self.lines));self.path.chmod(0o600)
         sources.scan(self.store,self.feedback,self.now)
-        self.run_not_found_batch(with_quotes=True);self.scan()
+        self.run_not_found_batch(with_quotes=True)
+        # A scan may yield after one complete record when setup consumed its
+        # soft quota. Prepare the tail by normal, progress-checked continuation
+        # instead of assuming one further scan necessarily reaches EOF.
+        for _ in range(8):
+            before=json.loads(self.store.rows('SELECT cursor FROM sources')[0]['cursor'])['files']
+            prior=next(iter(before.values()))
+            if prior['size']==self.path.stat().st_size:break
+            self.scan()
+            after=json.loads(self.store.rows('SELECT cursor FROM sources')[0]['cursor'])['files']
+            self.assertGreater(next(iter(after.values()))['offset'],prior['offset'])
+        cursor=json.loads(self.store.rows('SELECT cursor FROM sources')[0]['cursor'])['files']
+        self.assertEqual(next(iter(cursor.values()))['size'],self.path.stat().st_size)
         data,_,_=analysis.payload(self.store,self.now)
         self.assertEqual(data['current_contexts'][0]['turns'],[]);self.assertTrue(data['current_contexts'][0]['complete'])
         self.fail_model();budgets=self.feedback.rows('SELECT * FROM budget')

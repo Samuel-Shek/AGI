@@ -30,9 +30,9 @@ The fixed `owner-approved-proactive-20261014-v1` policy adds daily synthetic che
 
 The existing one-job-per-day engineering budget and two-candidate limit remain shared with user-reported repairs. A model proposes a bounded patch in a read-only workspace. The original behavior must fail both its regression and an independent fixed contract; the candidate must pass both. Generated tests run separately from fixed tests. Full fixed Python suites execute on an immutable trusted baseline, with each test module in a fresh process. Any call/read of changed code, module reload, unknown child process or unscoped dependency selects its entire test module for a fresh isolated candidate process. This retains within-module test order and cached values while preventing cross-module cache leakage. Test inventory, repeated test counts, skips, source manifests, logs and governance helper hashes are bound to the receipt. Swift, interaction, privacy, build and signing gates remain required.
 
-Publication needs a verified recovery package directly on the registered T9 disk, a clean matching source/App/Core pair and an idle native application. The new UI can exit gracefully only after a background maintenance launch that has received no user interaction and has no visible, minimized, edited or modal window. Initial installation on an older UI may need a normal user quit. No forced quit is used. Known temporary failures resume their saved phase; an uncertain model or installation request is only reconciled, never replayed. Snapshot construction records directory identity before checkout and never resets an unknown or completed tree.
+Publication needs a verified recovery package directly on the registered external recovery disk, a clean matching source/App/Core pair and an idle native application. Native exit protection follows current unsaved, saving, failed or unknown form state and current UI use: an active application, open menu, visible, minimized, edited or modal window prevents automatic exit. Merely viewing a page or having used the menu does not leave a permanent block; the background launch flag only controls initial window display. The native coordinator rechecks the request and current state immediately before graceful exit, and publication verifies actual process absence before each exchange and commit. Initial installation on an older UI still requires a verifiably safe normal exit; unavailable evidence postpones installation. No forced quit is used. See [Automatic update exit protection](IDLE_PUBLICATION.md) for fixed reasons, recovery conditions and receipt semantics. Known temporary failures resume their saved phase; an uncertain model or installation request is only reconciled, never replayed. Snapshot construction records directory identity before checkout and never resets an unknown or completed tree.
 
-After installation, the controller checks the current paired files, restored background runtime and the fixed behavior again. Only then can the existing private evolution group receive one two-line functional notice: what changed and why. Delivery rechecks group membership, destination and the installation proof; duplicate/unknown sends retain their original reconciliation rules. Queue progress remains local. Memory change notices retain their separate route. Fixed-input verification does not count toward the existing seven-day/three-independent-natural-results acceptance requirement.
+After installation, the controller checks the current paired files, restored background runtime and the fixed behavior again. Ordinary completion and recovery stay in the local evolution ledger under the owner's background-first preference. Previously attempted external deliveries retain their original target, membership and unknown-result reconciliation checks; no new completion message is sent. Necessary local decisions and persistent failures use the existing notification channel. The separate memory-governance notification route is unchanged. Fixed-input verification does not count toward the existing seven-day/three-independent-natural-results acceptance requirement.
 
 Failure is visible in the existing work-item state and verification logs; no passing release or success notice is recorded while a gate is missing. Global stop and autonomy pause stop new discovery, model work and installation. Disabling this policy leaves existing records and unknown outcomes intact. Recovery restores the exact replaced code through the paired publication contract and never restores an older user database. Source implementation, operator acceptance, live activation, first installed improvement, external delivery and long-term benefit each require their own evidence.
 
@@ -61,3 +61,141 @@ The owner-approved conversation policy `owner-primary-conversations-20261016-v1`
 Hermes additionally requires native primary-session and project metadata: no parent, the default profile, an absolute working directory and no corporate working/repository root. Missing metadata remains unknown. Read projections recheck this mutable database metadata on every admission rather than caching an allow against the main file's identity, which need not change while its WAL changes.
 
 Implementation and release acceptance must verify source, installed App/Core, external review-center and shared writer, retrieval behavior, persistent jobs and natural observation separately. None of this is a claim of general artificial intelligence.
+
+## Original file-tracking observation continuation
+
+The two fixed maintenance tasks may execute from a registered linked worktree of
+their original repository. This is execution-directory identity only; source,
+memory, scheduler and publication authority do not expand. The live desktop must
+still certify the original owner and current turn. A bounded isolated reader
+checks exact Git registration, top-level/common-directory identity, bidirectional
+administrative pointers and owned non-symlink metadata twice. A fresh desktop
+connection then confirms the same owner, turn and exact directory, and native
+identity is checked again before persisting adoption or a run result. Other IPC
+callers retain their exact-directory check. Failure records no native adoption.
+
+The operator-only `task-maintenance prepare-continuation` and `commit-continuation`
+actions extend only the existing `agi` heartbeat. They do not edit a scheduler,
+rewrite its original authorization, restore a pause, or change any other task.
+The old 20261016 single-check protocol and records remain immutable. The new
+append-only plan requires that original amendment to have been committed, the
+original native owner and issue, a current version/source-bound read, and an
+existing native human request receipt for the complete action-specific continue
+request. A caller's source task ID is only a locator: its native platform,
+session/turn-derived identity, human prompt digest and policy must verify against
+the closure sidecar. Self-written approval files and arbitrary caller fields
+cannot grant this exception. Policy 2 and a prompt hash are only locators, not
+human provenance. Production source identifiers and precise message hashes stay
+in the private ledger, never the program or synthetic fixtures; the user's actual
+sentence is not compiled into the product.
+
+Fresh prepare derives the one owned native session file under the registered
+native directory, reading only its bounded header and final 8 MiB. It verifies
+the actual `UserMessage` and adjacent visible `role=user` record, client ID,
+`user.text` kind and user provenance, matching content/digest, plus the separate
+`task_started` root turn with no parent or initiating agent. The message event
+itself need not carry those root fields. Quoted/code/material/agent text cannot
+authorize. A cross-chat source additionally needs a real completed native send
+receipt to this original owner; the existing original issue is checked separately.
+The current native source and subsequent human replacement check must pass before
+prepare. No caller supplies transcript paths, prose authority or frozen proof.
+
+The intent freezes only exact native record offsets, lengths and hashes, with
+file identity and source/target/issue association. Commit and later reads recheck
+those exact records, not the entire growing transcript or its old modification
+time. A normal later message does not invalidate an already-verified historical
+grant; rewritten original records still fail. Pause, cancellation and current
+controller authority remain separate live checks. The qualified controller owns
+this narrow native-format validation; it does not execute an external hook or
+introduce an unbound helper dependency.
+
+`prepare-continuation` takes exactly `used_version`, `issue_id`, `source_task_id`.
+It returns the exact daily 20:30 Beijing rule and fixed prompt generated for the
+current home directory. The operator must apply these once through the native
+`automation_update` interface to the same ID, preserving owner, thread, model,
+environment and project. The one quiet-preference exception fixes
+`notification_policy=failed_runs_only` (native tool field `notificationPolicy`),
+including when the original task has no policy. The alternate stored alias is
+removed; contradictory aliases are rejected. This implements the same human
+request to ask only for a real decision, not permission for arbitrary notification
+changes. Real decisions remain in the existing background/item notification path.
+Unknown native outcomes are
+only reconciled. `commit-continuation` takes exactly `intent_id`, verifies the
+complete native metadata, then appends a receipt; it never repeats the update.
+External native calls do not hold the controller gate. The established task
+lock, controller gate and ledger transaction order, plus final real authorization
+and source rechecks, prevent a revocation from being bypassed by a stale copy.
+The enabled/pending/native-definition checks for `record-run` execute after the
+same task lock is acquired. A prepare that wins that lock prevents the waiting
+record from committing, even though prepare does not change the spec version.
+A native run already recorded cannot start a first continuation intent; a fresh
+native turn is required, rather than rewriting or crossing the saved receipt.
+
+After a native update but before commit, only the original native owner's read
+can inspect the exact authenticated pending definition and load current evidence
+in a fresh turn. Ordinary progress records and retirement remain blocked. This
+lets the same intent recover after interruption or intervening progress without
+rewriting the first read or inventing a new authorization. Commit returns the
+verified native readback; the continuation digest creates exactly one new spec
+version on subsequent refresh, even when stage booleans have not changed. Old
+versions remain intact. A turn cannot replace its already-loaded version: the
+new spec's native use is recorded by a subsequent native turn, not by relabeling
+the old read.
+
+This release is coordinated with the original publishing chat. Future observation
+turns check the actual installed version and any active owner of the same repair
+first. If no same repair is active, the original `agi` task continues authorized
+repair and acceptance through the existing serial maintenance, independent review
+and paired publication conditions. It must not wait indefinitely merely because
+an older report names another chat. Merged intermediate-content uncertainty under
+plan B is not a new failure or a natural-help case. The original natural thresholds,
+scope, exclusions, budget and full retirement conditions are unchanged. Source,
+tests, paired installation, native schedule readback and a real future trigger
+are separate evidence; this documentation certifies none of those runtime stages.
+
+Before commit, reversing the precise program diff remains possible only while the
+native scheduler is still the prior definition and no unknown native update is in
+flight; otherwise retain the compatible reconciliation code and determine the
+original request outcome first. After commit, never restore an old maintenance
+module that cannot interpret the appended continuation: it would reject the same
+`agi` against its old binding. Any later precise paired rollback must preserve the
+new record reader/effective-schedule semantics, original authorization and all new
+history. Do not delete intent/commit records, rewrite the scheduler by hand or
+restore an old database to make an older program pass. Existing pause and release
+recovery procedures still apply.
+
+
+## Operator publication and database recovery scope
+
+The automatic model-edit allowlist is not the database backup policy. Its two-file
+pure-text admission remains unchanged. A fully qualified operator publication may
+reuse the same independent code review to prove that the reviewed change has no
+database or initialization effects. The `database_effect_review` reference in the
+existing product qualification contains an absolute path and SHA-256; it does not
+grant publication authority or extend automatic editing permissions.
+
+The private review artifact uses `independent-operator-database-effects-v1`, records
+positive source/dependency evidence, and binds the complete installed and candidate
+runtime trees, exact changed runtime files, full qualified source manifest, commit,
+qualification and paired App contents through `operator_database_effect_binding`.
+It may state `database_effects=unchanged` and `initialization_effects=unchanged` only
+after the reviewer has read the exact changes and their data/initialization paths.
+An `approved` flag or an absence of SQL keywords is not that evidence. Reuse the
+existing independent operator review; no extra user approval or service is needed.
+
+New/deleted runtime modules, changed imports, dependency/launcher changes, or
+changes to the activity, feedback or reflection initialization stores keep their
+dedicated database recovery. Missing, malformed, stale or mismatched review
+evidence also keeps that recovery. Even a valid no-effects review must pass the
+existing read-only check of actual database versions and shadow startup structure.
+The fixed publisher, candidate qualification, paired installation and prohibition
+on restoring an old database over later user data remain in force.
+
+A completed historical recovery package may be deliberately retired only under an
+explicit cleanup task after its active references and necessary retained recovery
+points are verified. Original prepared manifests and acceptance records remain
+immutable. An append-only, dual-volume lifecycle receipt identifies the exact
+retired payload and verifies all remaining contents and attributes. A retired
+package is no longer a complete recovery point; `check_external` is not relaxed
+to treat it as one. Unknown/incomplete transactions and necessary migration points
+remain intact. This is an operator cleanup procedure, not automatic retention.

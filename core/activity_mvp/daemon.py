@@ -97,7 +97,7 @@ ADAPTIVE_CAPTURE_WAIT_POLL_SECONDS = 5.0
 # a daemon restart, while the disabled screen pipeline stays genuinely quiet.
 SCREEN_CAPTURE_DISABLED_POLL_SECONDS = 60.0
 DEFAULT_PAUSE_MINUTES = 30
-LAUNCH_AGENT_ID = "app.personalai.monitor.core"
+LAUNCH_AGENT_ID = "app.psi.core"
 PRIVACY_PROFILE_ENV_KEY = "PAM_PRIVACY_PROFILE"
 DOCUMENT_CHANGE_STARTUP_RECONCILE_ENV_KEY = "PAM_DOCUMENT_CHANGE_STARTUP_RECONCILE_ENABLED"
 # 0 keeps the idle field in every status payload while letting the file
@@ -241,6 +241,10 @@ def _get_status(conn, root_dir: str | Path) -> dict:
     _set_state_if_changed(conn, "session_state", session_state_kind)
     pause_state = _pause_snapshot(conn, locked=locked)
     capture_lease = capture_lease_snapshot(conn)
+    # Persist this request's session/pause bookkeeping before status scans or
+    # dependency reads. Even a read-only dashboard must not keep the activity
+    # database's writer lock while walking directories or building reports.
+    conn.commit()
     screen_capture_enabled = capture_lease["enabled"]
     pause_until = pause_state["pause_until"]
     paused_remaining = pause_state["paused_remaining_seconds"]
@@ -805,6 +809,48 @@ def _safe_daemon_failure_code(scope: str, exc: Exception) -> str:
     return f"{scope}_failed"
 
 
+
+def _closure_tick_failure_record(exc: Exception, counters: dict) -> dict | None:
+    """Count a task-closure sidecar failure and return a redacted log record.
+
+    Only the exception type, a stable code, the innermost code location
+    (file basename, function, line) and counters are kept; never the message,
+    arguments or absolute paths, which can embed personal text. Logging is
+    throttled to the 1st, 2nd, 4th, 8th... consecutive failure.
+    """
+
+    counters["consecutive"] = counters.get("consecutive", 0) + 1
+    counters["total"] = counters.get("total", 0) + 1
+    consecutive = counters["consecutive"]
+    if consecutive & (consecutive - 1):
+        return None
+    location = "unknown"
+    tb = exc.__traceback__
+    while tb is not None and tb.tb_next is not None:
+        tb = tb.tb_next
+    if tb is not None:
+        code = tb.tb_frame.f_code
+        location = f"{os.path.basename(code.co_filename)}:{code.co_name}:{tb.tb_lineno}"
+    return {
+        "event": "task_closure_tick_failed",
+        "code": _safe_daemon_failure_code("task_closure_tick", exc),
+        "error_type": type(exc).__name__,
+        "location": location,
+        "consecutive": consecutive,
+        "total": counters["total"],
+    }
+
+
+def _closure_tick_recovered_record(counters: dict) -> dict | None:
+    """Return one redacted recovery record after failures, then reset."""
+
+    previous = counters.get("consecutive", 0)
+    if not previous:
+        return None
+    counters["consecutive"] = 0
+    return {"event": "task_closure_tick_recovered", "after_consecutive": previous, "total": counters.get("total", 0)}
+
+
 def _emit_document_change_transition_diagnostic(payload: dict) -> None:
     """Append one already-sanitized worker transition to the private daemon log."""
 
@@ -1149,6 +1195,7 @@ def run_daemon(
     last_raw_cleanup = time.monotonic()
     last_evidence_cleanup = 0.0
     last_closure_check = 0.0
+    closure_failures = {"consecutive": 0, "total": 0}
     last_retention_day = str(startup_maintenance["retention_day"])
     heartbeat = HeartbeatWriter("daemon")
     try:
@@ -1197,8 +1244,16 @@ def run_daemon(
                 from .task_closure import wake as closure_tick
                 try:
                     closure_tick(db_path)
-                except (OSError, sqlite3.Error, ValueError, RuntimeError):
-                    pass
+                except (OSError, sqlite3.Error, ValueError, RuntimeError) as exc:
+                    # Still never stops capture, but no longer silent: one
+                    # redacted, throttled line in the private daemon log.
+                    record = _closure_tick_failure_record(exc, closure_failures)
+                    if record is not None:
+                        print(json.dumps(record, ensure_ascii=True, sort_keys=True), file=sys.stderr)
+                else:
+                    record = _closure_tick_recovered_record(closure_failures)
+                    if record is not None:
+                        print(json.dumps(record, ensure_ascii=True, sort_keys=True), file=sys.stderr)
                 last_closure_check = loop_start
 
             if loop_start - last_raw_cleanup > 3600:
@@ -2907,7 +2962,7 @@ def cleanup_retention(conn, root_dir: str | Path, days: int | None = None) -> di
     result["operational_records"] = cleanup_operational_records(conn)
     canonical_data_root = (
         Path.home()
-        / "Library/Application Support/Personal AI Monitor/core/data"
+        / "Library/Application Support/PSI/core/data"
     ).resolve(strict=False)
     if Path(root_dir).expanduser().resolve(strict=False) == canonical_data_root:
         receipt_cleanup = cleanup_ai_attribution_receipts(
@@ -3395,7 +3450,7 @@ def install_launch_agent(
         runtime_db = runtime_root / db.relative_to(project_root)
     except ValueError:
         runtime_db = db
-    launch_logs_dir = Path.home() / "Library" / "Logs" / "Personal AI Monitor"
+    launch_logs_dir = Path.home() / "Library" / "Logs" / "PSI"
     launch_logs_dir.mkdir(parents=True, exist_ok=True)
     os.chmod(launch_logs_dir, 0o700)
     stdout_path = launch_logs_dir / "daemon.out.log"
@@ -4115,7 +4170,7 @@ def _runtime_identity(conn, root_dir: Path) -> dict:
     data_root = Path(root_dir)
     database_path = _database_path(conn)
     wrapper_root = Path.home() / ".personal-ai-monitor"
-    app_support_core = Path.home() / "Library" / "Application Support" / "Personal AI Monitor" / "core"
+    app_support_core = Path.home() / "Library" / "Application Support" / "PSI" / "core"
     core_resolved = core_root.resolve()
     data_resolved = data_root.resolve()
     db_resolved = Path(database_path).resolve() if database_path else Path()

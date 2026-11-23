@@ -21,7 +21,7 @@ from pathlib import Path
 # Transport adapted from Sync Center's receipt-verified desktop handoff.
 # Target identity is supplied by the private local installation configuration.
 PROJECT_ID = ""
-PROJECT_NAME = "AGI"
+PROJECT_NAME = "PSI"
 CODEX_DIRECTORY = Path.home() / ".codex"
 PROJECT_ROOT = Path.home() / "Code/active/personal-ai-monitor"
 APP_PATH = Path("/Applications/ChatGPT.app")
@@ -152,7 +152,7 @@ class AppServer:
             if len(matches) > 1 or result.get("nextCursor"):
                 raise NativeError("codex_project_ambiguous")
             if not matches:
-                return None  # Explicit projectless target; never defaults to AGI.
+                return None  # Explicit projectless target; never defaults to PSI.
             self.project_id = matches[0]["id"]
         value = self.call("project/read", {"projectId": self.project_id})["project"]
         roots = [str(Path(row["path"]).resolve()) for row in value.get("roots", [])]
@@ -209,6 +209,16 @@ class AppServer:
 
 
 class DesktopIPC:
+    def __init__(self, *, metadata_budget=None):
+        self.metadata_budget = metadata_budget
+
+    def _remaining(self, deadline):
+        from .native_metadata import MetadataError
+        try:
+            return self.metadata_budget.check(deadline)
+        except MetadataError as exc:
+            raise NativeError(str(exc)) from exc
+
     def __enter__(self):
         path = CODEX_DIRECTORY / "ipc/ipc.sock"
         try:
@@ -219,7 +229,7 @@ class DesktopIPC:
                 or parent.st_uid != os.getuid() or info.st_mode & 0o077 or parent.st_mode & 0o077):
             raise NativeError("codex_ipc_ownership")
         self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.socket.settimeout(6)
+        self.socket.settimeout(self._remaining(time.monotonic() + 6) if self.metadata_budget else 6)
         self.client_id = "initializing-client"
         try:
             self.socket.connect(str(path))
@@ -231,23 +241,35 @@ class DesktopIPC:
         return self
 
     def read_exact(self, length):
-        result = b""
+        result = bytearray()
         while len(result) < length:
-            value = self.socket.recv(length - len(result))
+            if self.metadata_budget:
+                from .native_metadata import MetadataError
+                try:
+                    value = self.metadata_budget.receive(self.socket, length - len(result), self._read_deadline)
+                except MetadataError as exc:
+                    raise NativeError(str(exc)) from exc
+            else:
+                value = self.socket.recv(length - len(result))
             if not value:
                 raise NativeError("codex_ipc_closed")
-            result += value
-        return result
+            result.extend(value)
+        return bytes(result)
 
     def call(self, method, params, *, version, target=None, timeout=6):
+        if self.metadata_budget and method not in ('initialize', 'thread-owner-discovery'):
+            raise NativeError('codex_metadata_read_only')
         identifier = str(uuid.uuid4())
         message = {"type": "request", "requestId": identifier, "sourceClientId": self.client_id,
                    "version": version, "method": method, "params": params, "timeoutMs": int(timeout * 1000)}
         if target:
             message["targetClientId"] = target
         data = json.dumps(message, ensure_ascii=False).encode()
-        self.socket.sendall(struct.pack("<I", len(data)) + data)
         deadline = time.monotonic() + timeout + 1
+        self._read_deadline = deadline
+        if self.metadata_budget:
+            self.socket.settimeout(self._remaining(deadline))
+        self.socket.sendall(struct.pack("<I", len(data)) + data)
         while True:
             if time.monotonic() >= deadline:
                 raise NativeError("codex_ipc_timeout")
@@ -267,7 +289,9 @@ class DesktopIPC:
             raise NativeError("codex_ipc_incompatible")
         return response["handledByClientId"]
 
-    def snapshot(self, identifier, *, expected_cwd=None, message_id=None, turn_id=None, current_turn=False):
+    def snapshot(self, identifier, *, expected_cwd=None, message_id=None, turn_id=None,
+                 current_turn=False, allow_registered_worktree=False,
+                 _expected_owner=None, _exact_cwd=False):
         """Read only the current desktop owner's bounded stream snapshot.
 
         Persisted app-server status is reconstructed by a different process and
@@ -275,30 +299,91 @@ class DesktopIPC:
         """
         if current_turn and turn_id is not None:
             raise NativeError("codex_snapshot_turn_selector_conflict")
+        if self.metadata_budget and not current_turn:
+            raise NativeError('codex_metadata_current_turn_only')
+        if allow_registered_worktree and (not expected_cwd or not current_turn):
+            raise NativeError("codex_snapshot_worktree_selector_invalid")
         identifier = thread_id(identifier)
         owner = self.owner(identifier)
+        if _expected_owner is not None and owner != _expected_owner:
+            raise NativeError("codex_snapshot_owner_changed")
         message = {"type": "broadcast", "sourceClientId": self.client_id,
                    "version": 1, "method": "thread-stream-following-changed",
                    "targetClientIds": [owner], "params": {"hostId": "local",
                    "conversationId": identifier, "following": True}}
         data = json.dumps(message).encode()
-        self.socket.sendall(struct.pack("<I", len(data)) + data)
         deadline = time.monotonic() + 6
+        self._read_deadline = deadline
+        if self.metadata_budget:
+            self.socket.settimeout(self._remaining(deadline))
+        self.socket.sendall(struct.pack("<I", len(data)) + data)
         while time.monotonic() < deadline:
             self.socket.settimeout(max(0.1, deadline - time.monotonic()))
             size = struct.unpack("<I", self.read_exact(4))[0]
-            if size > 8 * 1024 * 1024: raise NativeError("codex_snapshot_too_large")
-            response = json.loads(self.read_exact(size))
-            params = response.get("params", {})
-            if (response.get("method") != "thread-stream-state-changed"
-                    or response.get("sourceClientId") != owner
-                    or params.get("conversationId") != identifier): continue
+            if self.metadata_budget:
+                from .native_metadata import MetadataError, Projection
+                try:
+                    projection = Projection(self.socket, size, self.metadata_budget, deadline)
+                    response = projection.read()
+                except (MetadataError, OSError) as exc:
+                    self.socket.close()
+                    raise NativeError('codex_snapshot_metadata_rejected') from exc
+            else:
+                if size > 8 * 1024 * 1024: raise NativeError("codex_snapshot_too_large")
+                response = json.loads(self.read_exact(size))
+            if self.metadata_budget:
+                if not isinstance(response, dict):
+                    raise NativeError('codex_snapshot_routing_invalid')
+                # Ordinary RPC replies have no method. Only a complete frame
+                # can prove that absence; a present malformed method is unknown.
+                if 'method' not in response: continue
+                if not isinstance(response['method'], str):
+                    raise NativeError('codex_snapshot_routing_invalid')
+                if response['method'] != 'thread-stream-state-changed': continue
+                if not isinstance(response.get('sourceClientId'), str):
+                    raise NativeError('codex_snapshot_routing_invalid')
+                if response['sourceClientId'] != owner: continue
+                params = response.get('params')
+                if not isinstance(params, dict) or not isinstance(params.get('conversationId'), str):
+                    raise NativeError('codex_snapshot_routing_invalid')
+                if params['conversationId'] != identifier: continue
+                if projection.invalid_shape:
+                    raise NativeError('codex_snapshot_metadata_shape')
+            else:
+                params = response.get("params", {})
+                if (response.get("method") != "thread-stream-state-changed"
+                        or response.get("sourceClientId") != owner
+                        or params.get("conversationId") != identifier): continue
             if response.get("version") != 11 or params.get("change", {}).get("type") != "snapshot":
                 raise NativeError("codex_snapshot_incompatible")
             state = params["change"].get("conversationState", {})
+            observed_at = time.time()
+            worktree_verified = False
             if state.get("id") != identifier: raise NativeError("codex_snapshot_target_mismatch")
-            if expected_cwd and (not state.get("cwd") or Path(state["cwd"]).resolve() != Path(expected_cwd).resolve()):
-                raise NativeError("codex_snapshot_target_mismatch")
+            # Worktree validation performs filesystem resolution only in its
+            # bounded reader. The confirmation compares that exact raw path.
+            same_cwd = True
+            if expected_cwd:
+                if allow_registered_worktree or _exact_cwd:
+                    same_cwd = state.get("cwd") == str(expected_cwd)
+                else:
+                    same_cwd = bool(state.get("cwd")) and Path(state["cwd"]).resolve() == Path(expected_cwd).resolve()
+            if expected_cwd and not same_cwd:
+                if not allow_registered_worktree:
+                    raise NativeError("codex_snapshot_target_mismatch")
+                from .native_worktree import verify_registered_worktree
+                # The unchanged reader has a 3-second wait plus at most one
+                # second to reap its own process. Do not enter it without that
+                # budget; validation is never allowed to extend this context.
+                if self.metadata_budget and self._remaining(self.metadata_budget.deadline) <= 4:
+                    raise NativeError('codex_metadata_timeout')
+                try:
+                    verify_registered_worktree(expected_cwd, state.get("cwd"))
+                    worktree_verified = True
+                except (OSError, ValueError, TypeError, subprocess.SubprocessError) as exc:
+                    raise NativeError("codex_snapshot_target_mismatch") from exc
+            if self.metadata_budget:
+                self._remaining(self.metadata_budget.deadline)
             if message_id and state.get("latestTurnStartMessageId") != message_id:
                 return {"activity": "unknown", "reason": "newer_turn", "observed_at": time.time()}
             turns = state.get("turns", [])
@@ -324,10 +409,31 @@ class DesktopIPC:
             turn = (latest if current_turn else
                     next((t for t in turns if (t.get("turnId") or t.get("id")) == turn_id), None)) if turn_id else None
             runtime = state.get("threadRuntimeStatus", {})
-            return {"activity": runtime.get("type", "unknown"), "turn_status": turn.get("status") if turn else None,
-                    "turn_id": turn_id, "observed_at": time.time(), "source": "desktop_owner",
+            result = {"activity": runtime.get("type", "unknown"), "turn_status": turn.get("status") if turn else None,
+                    "turn_id": turn_id, "observed_at": observed_at, "source": "desktop_owner",
                     "current_turn_matches": current_turn_matches,
                     "usage": state.get("latestTokenUsageInfo")}
+            if worktree_verified:
+                # Metadata validation may take time. Confirm the same desktop
+                # owner, exact directory and current turn using a new snapshot;
+                # the second read uses the ordinary strict path, not opt-in.
+                # A fresh connection requests a fresh subscription snapshot;
+                # repeating following=True on this socket may reuse a stream.
+                confirmation_reader = (DesktopIPC(metadata_budget=self.metadata_budget)
+                                       if self.metadata_budget else DesktopIPC())
+                with confirmation_reader as confirmation:
+                    confirmed = confirmation.snapshot(
+                        identifier, expected_cwd=state['cwd'], message_id=message_id,
+                        current_turn=True, _expected_owner=owner, _exact_cwd=True)
+                if any(confirmed.get(key) != result.get(key) for key in
+                       ('activity', 'turn_status', 'turn_id', 'current_turn_matches')):
+                    raise NativeError("codex_snapshot_current_turn_changed")
+                if self.metadata_budget:
+                    self._remaining(self.metadata_budget.deadline)
+                return confirmed
+            if self.metadata_budget:
+                self._remaining(self.metadata_budget.deadline)
+            return result
         raise NativeError("codex_snapshot_timeout")
 
     def submit(self, identifier, owner, message_id, prompt, *, collaboration_mode=None):

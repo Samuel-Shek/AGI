@@ -152,7 +152,7 @@ final class Phase2CoreProcessExecutor: @unchecked Sendable {
         ).first ?? URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent("Library/Application Support", isDirectory: true)
         return applicationSupport
-            .appendingPathComponent("Personal AI Monitor", isDirectory: true)
+            .appendingPathComponent("PSI", isDirectory: true)
             .appendingPathComponent("core", isDirectory: true)
     }
 }
@@ -360,7 +360,7 @@ enum Phase2UIDeliveryStage: String, Hashable {
     var title: String {
         switch self {
         case .needsInput: return "待补充"
-        case .prepared: return "AGI 已准备"
+        case .prepared: return "PSI 已准备"
         case .consumed: return "Hermes 已消费"
         case .delivered: return "飞书已送达"
         case .failed: return "送达失败"
@@ -951,14 +951,15 @@ final class Phase2ConsoleCoordinator: ObservableObject {
         summary: String,
         outcome: String,
         project: Phase2UIProject?
-    ) async -> Bool {
+    ) async -> (status: PublicationDraftState.Status, body: String?) {
         guard actionsEnabled else {
             quickCaptureMessage = "当前补记安全门禁未开放。"
-            return false
+            return (.saveFailed, nil)
         }
         let token = viewState.beginRequest(for: .ownerAction)
         quickCaptureMessage = "正在本机保存…"
         let now = Date()
+        var frozenBody: String?
         do {
             let action = OwnerContextActionV1(
                 action: .manualNote,
@@ -973,8 +974,9 @@ final class Phase2ConsoleCoordinator: ObservableObject {
                     ? nil
                     : (project?.title ?? "未归类")
             )
+            frozenBody = String(data: try action.encodedStandardInput(), encoding: .utf8)
             let result = try await service.submitOwnerAction(action)
-            guard viewState.cancel(token) else { return false }
+            guard viewState.cancel(token) else { return (.unknown, frozenBody) }
             guard ["recorded", "replayed"].contains(result.status),
                   result.actionRef != nil,
                   result.confirmationRef != nil,
@@ -982,14 +984,14 @@ final class Phase2ConsoleCoordinator: ObservableObject {
                   result.verificationState == "verified"
             else {
                 quickCaptureMessage = "Core 未返回完整原子写入回执，未把补记当成成功。"
-                return false
+                return (["rejected", "disabled", "blocked"].contains(result.status) ? .saveFailed : .unknown, frozenBody)
             }
             quickCaptureMessage = "已保存为本机已确认事实。"
-            return true
+            return (.clean, frozenBody)
         } catch {
-            guard viewState.cancel(token) else { return false }
+            guard viewState.cancel(token) else { return (.unknown, frozenBody) }
             quickCaptureMessage = "补记失败或回执不满足安全契约。"
-            return false
+            return (.unknown, frozenBody)
         }
     }
 
@@ -1657,7 +1659,7 @@ struct Phase2ContextConsoleRoot: View {
             HStack(spacing: 10) {
                 LogoMark(size: 34)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("AGI")
+                    Text("PSI")
                         .font(.headline.weight(.bold))
                     Text("个人上下文控制台")
                         .font(.caption2)
@@ -2866,10 +2868,10 @@ struct Phase2QuickCaptureSheet: View {
     @ObservedObject var runner: CoreRunner
     @ObservedObject var coordinator: Phase2ConsoleCoordinator
     @Environment(\.dismiss) private var dismiss
-    @State private var summary = ""
-    @State private var selectedProjectID = ""
-    @State private var outcome = ""
-    @State private var explicitlyConfirmedOwner = false
+    @RetainedDraft("quick-capture", "summary") private var summary = ""
+    @RetainedDraft("quick-capture", "selectedProjectID") private var selectedProjectID = ""
+    @RetainedDraft("quick-capture", "outcome") private var outcome = ""
+    @RetainedDraft("quick-capture", "explicitlyConfirmedOwner") private var explicitlyConfirmedOwner = false
     @State private var saving = false
     @State private var errorMessage = ""
     @State private var idempotencyKey = Phase2ConsoleCoordinator.makeIdempotencyKey(
@@ -2971,7 +2973,7 @@ struct Phase2QuickCaptureSheet: View {
             }
 
             HStack {
-                Button("取消") { dismiss() }
+                Button("放弃修改") { PublicationDrafts.shared.discard("quick-capture"); dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Spacer()
                 Button {
@@ -2992,7 +2994,7 @@ struct Phase2QuickCaptureSheet: View {
         .frame(width: 540)
         .onAppear {
             if selectedProjectID.isEmpty {
-                selectedProjectID = eligibleProjects.first?.id ?? ""
+                PublicationDrafts.shared.initialize("quick-capture/selectedProjectID", value: eligibleProjects.first?.id ?? "")
             }
             summaryFocused = true
         }
@@ -3012,16 +3014,35 @@ struct Phase2QuickCaptureSheet: View {
             errorMessage = "请填写内容和结果，并确认这是你本人明确陈述的事实。"
             return
         }
+        if PublicationDrafts.shared.needsReadback("quick-capture") {
+            Task { await PublicationDrafts.shared.retry("quick-capture") }; return
+        }
         saving = true
+        idempotencyKey = Phase2ConsoleCoordinator.makeIdempotencyKey("quick|\(UUID().uuidString)")
+        let ticket = PublicationDrafts.shared.begin("quick-capture")
+        let submittedKey = idempotencyKey
+        let submittedSummary = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let submittedOutcome = outcome, submittedProject = selectedProject
         Task {
             let succeeded = await coordinator.submitQuickCapture(
-                idempotencyKey: idempotencyKey,
-                summary: summary.trimmingCharacters(in: .whitespacesAndNewlines),
-                outcome: outcome,
-                project: selectedProject
+                idempotencyKey: submittedKey,
+                summary: submittedSummary,
+                outcome: submittedOutcome,
+                project: submittedProject
             )
             saving = false
-            if succeeded {
+            let current = PublicationDrafts.shared.isCurrent(ticket)
+            PublicationDrafts.shared.finish(ticket, succeeded.status)
+            if succeeded.status == .unknown, let body = succeeded.body {
+                await PublicationDrafts.shared.verify(ticket) {
+                    PublicationDrafts.readback(await runner.runCore(["context-console", "owner-action-receipt", "--payload-stdin"], standardInput: body), interface: "owner-action-receipt")
+                }
+            }
+            if succeeded.status == .unknown {
+                PublicationDrafts.shared.completeAfterReadback(ticket, scope: "quick-capture") { dismiss() }
+            }
+            if succeeded.status == .clean && current {
+                PublicationDrafts.shared.resetSaved("quick-capture")
                 await coordinator.refresh(runner: runner)
                 dismiss()
             } else {

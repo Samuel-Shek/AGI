@@ -1,3 +1,4 @@
+from tests.closure_legacy_fixture import legacy_begin
 import json
 import tempfile
 import unittest
@@ -15,7 +16,7 @@ class ClosureScopeTests(unittest.TestCase):
         self.source = self.root / "input.txt"
         self.source.write_text("synthetic input")
         self.store = Store(self.root / "activity.sqlite")
-        self.task = self.store.begin({"platform": "codex", "session": "fixture", "turn": "original",
+        self.task = legacy_begin(self.store, {"platform": "codex", "session": "fixture", "turn": "original",
             "objective": "explicit file scope", "scope_root": str(self.root), "complex": True})["task_id"]
         self.authority = {"source": "fixture file authorization", "scope": str(self.root),
             "reversible": True, "cost": False, "new_permission": False, "external": False, "personal_choice": False}
@@ -164,7 +165,7 @@ class ClosureScopeTests(unittest.TestCase):
                        {"scope_correction": {"revision": 1, "basis": "fixture"},
                         "authority": {**self.authority, "scope": scope, "source": "changed source"}}):
             with self.assertRaisesRegex(ValueError, "scope_correction_binding_invalid"): self.register(scope, **extras)
-        other = self.store.begin({"platform": "codex", "session": "other", "turn": "other",
+        other = legacy_begin(self.store, {"platform": "codex", "session": "other", "turn": "other",
             "objective": "other executor", "scope_root": str(self.root)})["task_id"]
         with self.assertRaisesRegex(ValueError, "scope_correction_binding_invalid"):
             self.register(scope, task_id=other, scope_correction={"revision": 1, "basis": "fixture"})

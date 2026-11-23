@@ -22,7 +22,7 @@ import threading
 import time
 import uuid
 import zipfile
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Iterator
@@ -61,6 +61,9 @@ _DOCUMENT_BASELINE_LIVE_SESSION_PROBE = contextvars.ContextVar(
 )
 _DOCUMENT_DATALESS_READ_RECOVERY = contextvars.ContextVar(
     "document_dataless_read_recovery", default=None,
+)
+_DOCUMENT_EVENT_ACTOR_EVIDENCE = contextvars.ContextVar(
+    "document_event_actor_evidence", default=None,
 )
 
 
@@ -164,6 +167,64 @@ _DOCUMENT_BASELINE_IO_ERRNOS = (
 )
 
 
+def _consumer_exception_evidence(error: Exception) -> dict:
+    """Bounded program locations only; never exception text or source data."""
+    known_types = (
+        OSError, PermissionError, FileNotFoundError, TimeoutError,
+        ValueError, TypeError, KeyError, RuntimeError,
+        sqlite3.OperationalError, sqlite3.IntegrityError,
+        sqlite3.ProgrammingError, sqlite3.DatabaseError,
+    )
+    error_type = type(error)
+    category = error_type.__name__ if error_type in known_types else "other"
+    modules = {
+        str(Path(__file__).parent / name): name
+        for name in ("document_changes.py", "storage.py", "worker_connections.py",
+                     "document_git_ignore.py")
+    }
+    frames = []
+    trace = error.__traceback__
+    while trace is not None:
+        module = modules.get(trace.tb_frame.f_code.co_filename)
+        if module is not None:
+            frames.append({"module": module, "line": trace.tb_lineno})
+        trace = trace.tb_next
+    sqlite_code = "not_provided"
+    if error_type in (sqlite3.OperationalError, sqlite3.IntegrityError,
+                      sqlite3.ProgrammingError, sqlite3.DatabaseError):
+        number = getattr(error, "sqlite_errorcode", None)
+        if type(number) is int:
+            sqlite_code = "other"
+            for name in ("SQLITE_BUSY", "SQLITE_LOCKED", "SQLITE_IOERR",
+                         "SQLITE_FULL", "SQLITE_READONLY", "SQLITE_CORRUPT",
+                         "SQLITE_CONSTRAINT", "SQLITE_SCHEMA", "SQLITE_INTERRUPT"):
+                if number & 0xff == getattr(sqlite3, name):
+                    sqlite_code = name
+                    break
+    result = {"exception_type": category, "sqlite_code": sqlite_code, "frames": frames[-8:]}
+    if error_type is sqlite3.OperationalError:
+        number = getattr(error, "sqlite_errorcode", None)
+        extended = "not_provided" if type(number) is not int else "other"
+        for name in ("SQLITE_BUSY", "SQLITE_LOCKED", "SQLITE_BUSY_RECOVERY",
+                     "SQLITE_BUSY_SNAPSHOT", "SQLITE_BUSY_TIMEOUT",
+                     "SQLITE_LOCKED_SHAREDCACHE", "SQLITE_LOCKED_VTAB"):
+            if type(number) is int and number == getattr(sqlite3, name, None):
+                extended = name
+                break
+        result["sqlite_extended_code"] = extended
+        retry = getattr(error, "_pam_sqlite_retry", None)
+        if isinstance(retry, dict) and retry.get("reason") in {
+            "snapshot_requires_restart", "not_retryable", "stopping", "deadline"
+        }:
+            safe_retry = {"reason": retry["reason"]}
+            for key in ("attempts", "elapsed_ms"):
+                value = retry.get(key)
+                if type(value) is int and 0 <= value <= 2147483647:
+                    safe_retry[key] = value
+            result["sqlite_retry"] = safe_retry
+    return result
+
+
 def _baseline_snapshot_io_details(exc: OSError) -> tuple[str, str]:
     # A closed label identifies the deepest recognized product frame. Never
     # export a traceback, filename, exception message or arbitrary errno.
@@ -263,6 +324,9 @@ def _document_change_session_allows_content(value: object) -> bool:
 # pass 1 did: something moved while we were reading.  One honest retry catches
 # the genuinely quiet case; a third identical attempt only buys I/O.
 DOCUMENT_BASELINE_MAX_PASSES = 2
+# Coalesce/retry rule-driven rescans at the existing lifecycle cooldown; never
+# turn every rule event into a helper restart or an unbounded scan loop.
+DOCUMENT_IGNORE_RECONCILE_COOLDOWN_SECONDS = 60.0
 # The per-file authorization gate used to open a brand-new connection for every
 # single file, and ensure_ready runs the whole schema pipeline -- backup checks,
 # init_schema, a write commit -- on every open.  Measured on this machine's
@@ -1038,7 +1102,8 @@ def _ensure_default_document_roots_locked(
         )
         conn.execute(
             "UPDATE file_watch_checkpoints SET last_event_id=NULL,coverage_status='partial',"
-            "event_gap_count=MAX(1,event_gap_count),coverage_started_at=NULL,updated_at=?",
+            "event_gap_count=MAX(1,event_gap_count),coverage_started_at=NULL,updated_at=? "
+            "WHERE root_id IN (SELECT root_id FROM file_watch_roots WHERE enabled=1)",
             (now,),
         )
         conn.commit()
@@ -1732,6 +1797,7 @@ def process_document_event(
         else int(expected_epoch)
     )
     with document_authorization_lock(conn, exclusive=True, initialize_if_missing=True):
+        actor_token = _DOCUMENT_EVENT_ACTOR_EVIDENCE.set({})
         try:
             result = _process_document_event_locked(
                 conn,
@@ -1768,8 +1834,11 @@ def process_document_event(
             # admitted only a clean caller connection, so every transaction
             # still open here belongs to this event and must be rolled back
             # before the exclusive privacy lease is released.
-            if conn.in_transaction:
-                conn.rollback()
+            try:
+                if conn.in_transaction:
+                    conn.rollback()
+            finally:
+                _DOCUMENT_EVENT_ACTOR_EVIDENCE.reset(actor_token)
 
 
 def _process_document_event_locked(
@@ -1859,8 +1928,13 @@ def _process_document_event_locked(
         rejection = _begin_document_change_write(conn, root_id, event_epoch)
         if rejection:
             return {"recorded": False, "reason": rejection, "raw_access": False}
-        _record_gap(conn, root_id, observed, event_id)
-        conn.commit()
+        try:
+            _record_gap(conn, root_id, observed, event_id, reason_code="ignore_rules_reconcile_required")
+            _request_ignore_reconcile(conn, root_id)
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
         return {
             "recorded": False,
             "reason": "ignore_rules_reconcile_required",
@@ -1976,6 +2050,12 @@ def _process_document_event_locked(
         except (OSError, ValueError, RuntimeError, zipfile.BadZipFile):
             conn.rollback()
             return {"recorded": False, "reason": "unstable_or_unreadable", "raw_access": False}
+
+    actor_scope = _DOCUMENT_EVENT_ACTOR_EVIDENCE.get()
+    if actor_scope is not None:
+        actor_scope["snapshot"] = _prepare_event_actor_evidence(
+            conn, root, root_id, file_id, observed
+        )
 
     # All state/event/checkpoint decisions below are made after acquiring the
     # SQLite write lock and atomically rechecking the arrival epoch.  This closes
@@ -2284,6 +2364,7 @@ def _record_unresolved_document_event(
     except OSError:
         pass
 
+    actor_evidence = _prepare_event_actor_evidence(conn, root, root_id, file_id, observed)
     rejection = _begin_document_change_write(conn, root_id, expected_epoch)
     if rejection:
         return {"recorded": False, "reason": rejection, "raw_access": False}
@@ -2353,20 +2434,24 @@ def _record_unresolved_document_event(
             }
         ),
     }
-    item = _record_change(
-        conn,
-        source,
-        root_id,
-        kind,
-        observed,
-        (
-            "检测到受保护文件发生变化；本次只保留计数，未保存文件名或内容摘要。"
-            if protected
-            else "检测到文件变化；该次写入尚未稳定，已保守列入待确认归因。"
-        ),
-        detail,
-        helper_event_id=event_id,
-    )
+    actor_token = _DOCUMENT_EVENT_ACTOR_EVIDENCE.set({"snapshot": actor_evidence})
+    try:
+        item = _record_change(
+            conn,
+            source,
+            root_id,
+            kind,
+            observed,
+            (
+                "检测到受保护文件发生变化；本次只保留计数，未保存文件名或内容摘要。"
+                if protected
+                else "检测到文件变化；该次写入尚未稳定，已保守列入待确认归因。"
+            ),
+            detail,
+            helper_event_id=event_id,
+        )
+    finally:
+        _DOCUMENT_EVENT_ACTOR_EVIDENCE.reset(actor_token)
     conn.execute(
         "UPDATE file_change_versions SET coverage_state='file_unresolved',"
         "observed_version_count=observed_version_count+?,"
@@ -3126,10 +3211,84 @@ def _coverage_state_for_version(conn: sqlite3.Connection, root_id: str, changed_
     return "continuous"
 
 
+def _event_actor_binding(conn: sqlite3.Connection, root: Path):
+    """Small source/credential checks; no attribution log read or key flock."""
+    database = _connection_database_path(conn)
+    if database is None:
+        raise RuntimeError("event actor database unavailable")
+
+    def version(path, *, missing=False, key=False):
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            if missing:
+                return None
+            raise
+        if not stat_module.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
+            raise OSError("event actor source unavailable")
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_size, info.st_mtime_ns,
+                None if key else info.st_ctime_ns)
+
+    secret = _existing_hmac_key_readonly(conn)
+    info = root.lstat()
+    return (
+        str(database), _document_change_epoch(conn), _stored_hmac_verifier(conn),
+        hashlib.sha256(secret).digest(),
+        version(database.parent / HMAC_SECRET_FILENAME, key=True),
+        version(database.parent / RUNTIME_ROOTS_FILENAME),
+        (info.st_dev, info.st_ino, info.st_mode, info.st_uid, str(root.resolve())),
+        version(AI_EDIT_ROTATED_LOG_PATH, missing=True),
+        version(AI_EDIT_LOG_PATH, missing=True),
+    )
+
+
+def _prepare_event_actor_evidence(conn, root, root_id, file_id, at):
+    """One event's raw AI facts, prepared before SQLite's writer is held.
+
+    This does not cache a verdict or grant. The existing reader retains its
+    time window, private key/registry checks and identity mapping. Only this
+    file's matching facts survive, and writer-side binding changes discard them.
+    """
+    if conn.in_transaction:
+        return None
+    try:
+        before = _event_actor_binding(conn, root)
+        records = _load_ai_edit_attribution(conn, at, at).get(file_id, [])
+        if conn.in_transaction or before != _event_actor_binding(conn, root):
+            return None
+        return {"root": root, "root_id": root_id, "file_id": file_id,
+                "at": at, "binding": before, "records": records}
+    except (OSError, sqlite3.Error, RuntimeError, ValueError):
+        return None
+    finally:
+        # The caller admitted a clean connection. A legacy migration attempted
+        # by an attribution read may not open the event's writer early.
+        if conn.in_transaction:
+            conn.rollback()
+
+
 def _actor_for_file_version(conn: sqlite3.Connection, item: dict) -> dict:
     changed_at = str(item.get("changed_at") or item.get("last_changed_at") or "")
     file_id = str(item.get("file_id") or "")
-    ai_records = _load_ai_edit_attribution(conn, changed_at, changed_at)
+    scope = _DOCUMENT_EVENT_ACTOR_EVIDENCE.get()
+    if scope is None:
+        ai_records = _load_ai_edit_attribution(conn, changed_at, changed_at)
+    else:
+        evidence = scope.get("snapshot")
+        try:
+            valid = (evidence is not None and evidence["file_id"] == file_id
+                     and evidence["root_id"] == str(item.get("root_id") or "")
+                     and evidence["at"] == changed_at
+                     and evidence["binding"] == _event_actor_binding(conn, evidence["root"]))
+        except (OSError, sqlite3.Error, RuntimeError, ValueError):
+            valid = False
+        if not valid:
+            # Discard only these AI facts. Independent exact human evidence
+            # still uses fresh database rows below; never parse logs or wait
+            # for an external key lock inside the event's write transaction.
+            ai_records = {}
+        else:
+            ai_records = {file_id: evidence["records"]}
     ai = _ai_attribution_for(ai_records.get(file_id), {
         "first_changed_at": changed_at,
         "last_changed_at": changed_at,
@@ -3458,6 +3617,7 @@ DOCUMENT_CHANGE_WORKER_THREAD_KEYS = (
     "validator",
     "processor",
     "monitor",
+    "reconciler",
 )
 
 
@@ -3818,7 +3978,9 @@ def start_document_change_worker(
     )
     baseline_lock = threading.Lock()
     baseline_epoch_lock = threading.Lock()
-    epoch_state = {"active": not resume_existing_baseline, "dirty": False}
+    epoch_state = {"active": not resume_existing_baseline, "dirty": False,
+                   "root_ids": None, "rules_dirty": False, "kind": "startup"}
+    reconcile_progress = {"at": None}
     sequence_lock = threading.Lock()
     sequence_value = 0
     # Latest queued order key per path, for content events only (not ignored,
@@ -3920,7 +4082,8 @@ def start_document_change_worker(
                 "stage": stage,
                 "pass_number": int(snapshot["pass_number"]),
                 "max_passes": int(snapshot["max_passes"]),
-                "root_count": len(roots),
+                "root_count": len(roots) if epoch_state["root_ids"] is None else len(epoch_state["root_ids"]),
+                "baseline_kind": epoch_state["kind"],
                 "root_scan_attempts_finished_count": int(
                     snapshot["root_scan_attempts_finished_count"]
                 ),
@@ -4098,6 +4261,9 @@ def start_document_change_worker(
                             affects_attribution=attribution_gap,
                             reason_code=reason,
                         )
+                if reason == "ignore_rules_reconcile_required":
+                    for root_id in authorized:
+                        _request_ignore_reconcile(gap_conn, root_id)
                 gap_conn.commit()
             finally:
                 gap_conn.close()
@@ -4392,7 +4558,17 @@ def start_document_change_worker(
                 # pending writes, or content work after the stop boundary.
                 if process.stopping:
                     continue
-                if epoch_state["active"]:
+                if epoch_state["active"] and (
+                    epoch_state["root_ids"] is None
+                    or _lexical_registry_root_id(roots, str(event.get("path") or "")) in epoch_state["root_ids"]
+                ):
+                    if epoch_state["root_ids"] is not None:
+                        lexical_root_id = _lexical_registry_root_id(roots, str(event.get("path") or ""))
+                        lexical_root = next((item for item in roots if str(item["root_id"]) == lexical_root_id), None)
+                        if lexical_root is not None and _is_ignore_control(Path(str(event.get("path") or ""))):
+                            if _ignore_control_has_skipped_parent(Path(lexical_root["path"]), Path(str(event.get("path") or ""))):
+                                continue
+                            epoch_state["rules_dirty"] = True
                     # The helper protocol already validated an absolute path,
                     # and this generation subscribes only to the authorized
                     # roots captured at startup.  During a baseline, no raw
@@ -4410,6 +4586,16 @@ def start_document_change_worker(
             if match is None:
                 continue
             root_id = str(match["root_id"])
+            # The lexical fast path above performs no filesystem work. A path
+            # resolving through an alias must still obey the selected-root gate.
+            with baseline_epoch_lock:
+                if epoch_state["active"] and epoch_state["root_ids"] is not None and root_id in epoch_state["root_ids"]:
+                    if _is_ignore_control(Path(path_key)):
+                        if _ignore_control_has_skipped_parent(Path(str(match["path"])), Path(path_key)):
+                            continue
+                        epoch_state["rules_dirty"] = True
+                    epoch_state["dirty"] = True
+                    continue
             coverage_transition = None
             ignore_control = _is_ignore_control(Path(path_key))
             skipped_control = ignore_control and _ignore_control_has_skipped_parent(
@@ -4445,7 +4631,7 @@ def start_document_change_worker(
                     discarding = True
                     continue
                 definitely_ignored = definitely_ignored or skipped_control
-            if "item_is_dir" in flags and not definitely_ignored:
+            if coverage_transition is None and "item_is_dir" in flags and not definitely_ignored:
                 # A directory event can hide a bulk move that file-level events
                 # do not describe. Persist that bounded uncertainty, but do not
                 # turn normal iCloud/download churn into a fatal stream gap.
@@ -4539,7 +4725,19 @@ def start_document_change_worker(
     def consume() -> None:
         try:
             consume_body()
-        except Exception:
+        except Exception as error:
+            # Capture the original failure before cleanup can replace it.
+            # Even a diagnostic construction/sink failure must retain the
+            # existing pending-count handling and fail-closed stream reset.
+            try:
+                emit_internal_diagnostic({
+                    "event": "document_change_consumer_exception",
+                    "stage": "consumer", "observed_at": _now(),
+                    "pid": os.getpid(), "raw_access": False,
+                    **_consumer_exception_evidence(error),
+                })
+            except Exception:
+                pass
             active_entry = consumer_active_entry.get("entry")
             if isinstance(active_entry, dict):
                 release_pending_after_failure(active_entry)
@@ -5002,6 +5200,7 @@ def start_document_change_worker(
         "validator": validator,
         "processor": processor,
         "monitor": None,
+        "reconciler": None,
     }
 
     def stop_and_join_startup_worker(reason: str) -> Exception | None:
@@ -5038,7 +5237,7 @@ def start_document_change_worker(
     # global current event ID. Different retained root cursors are valid;
     # the later flush barrier and dropped/wrapped flags prove continuity.
 
-    def begin_baseline_epoch() -> int | None:
+    def begin_baseline_epoch(epoch_roots) -> int | None:
         now = _now()
         begin_conn = ensure_ready(database)
         try:
@@ -5058,7 +5257,7 @@ def start_document_change_worker(
             if _document_change_epoch(begin_conn) != worker_authorization_epoch:
                 raise RuntimeError("document authorization changed before baseline")
             baseline_authorization_epoch = worker_authorization_epoch
-            for item in roots:
+            for item in epoch_roots:
                 root_id = str(item["root_id"])
                 if not root_authorized(begin_conn, root_id):
                     raise RuntimeError("document root authorization changed before baseline")
@@ -5089,11 +5288,19 @@ def start_document_change_worker(
         barrier: dict,
         baseline_authorization_epoch: int,
         deferred_deletes_by_root: dict[str, dict[str, str]],
+        epoch_roots,
+        request_versions,
     ) -> bool:
         at = _iso(str(barrier.get("observed_at") or ""))
         barrier_id = str(barrier.get("event_id") or "")
         if _transition_hook is not None:
             _transition_hook("before_finish_lock")
+        running_reconcile = epoch_state["kind"] == "ignore_rules_reconcile"
+        # The generic window callback may use SQLite: invoke it before owning a
+        # writer transaction. Inside that transaction only the private session
+        # probe and this connection's exact authorization checks are safe.
+        if running_reconcile and not reconcile_window_open(force=True):
+            return False
         with coverage_transition_lock:
             if stream_gap.is_set() or process.stopping:
                 return False
@@ -5101,13 +5308,16 @@ def start_document_change_worker(
             try:
                 if not finish_conn.in_transaction:
                     finish_conn.execute("BEGIN IMMEDIATE")
+                if running_reconcile and not live_content_allowed():
+                    finish_conn.rollback()
+                    return False
                 if not _setting_bool(finish_conn, "document_change_tracking_enabled", True):
                     finish_conn.rollback()
                     return False
                 if _document_change_epoch(finish_conn) != baseline_authorization_epoch:
                     finish_conn.rollback()
                     return False
-                if any(not root_authorized(finish_conn, str(item["root_id"])) for item in roots):
+                if any(not root_authorized(finish_conn, str(item["root_id"])) for item in epoch_roots):
                     finish_conn.rollback()
                     return False
                 if any(
@@ -5116,7 +5326,7 @@ def start_document_change_worker(
                         str(item["root_id"]),
                         deferred_deletes_by_root.get(str(item["root_id"]), {}),
                     )
-                    for item in roots
+                    for item in epoch_roots
                 ):
                     # An event writer changed a row after this pass captured its
                     # missing-file plan.  Discard the whole pass and rescan;
@@ -5124,7 +5334,14 @@ def start_document_change_worker(
                     # absence evidence.
                     finish_conn.rollback()
                     return False
-                for item in roots:
+                current_requests = _ignore_reconcile_requests(finish_conn)
+                if (epoch_state["rules_dirty"] or any(
+                    current_requests.get(root_id) != version
+                    for root_id, version in request_versions.items()
+                )):
+                    finish_conn.rollback()
+                    return False
+                for item in epoch_roots:
                     root_id = str(item["root_id"])
                     current = finish_conn.execute(
                         "SELECT last_event_id FROM file_watch_checkpoints WHERE root_id=?",
@@ -5152,8 +5369,16 @@ def start_document_change_worker(
                 if stream_gap.is_set() or process.stopping:
                     finish_conn.rollback()
                     return False
-                _set_document_change_pending(finish_conn, 0)
-                _set_resume_pending(finish_conn, False)
+                _clear_ignore_reconcile_requests(finish_conn, request_versions)
+                # Running reconciliation drains all prior admitted events, but
+                # post-barrier work on other roots can already be admitted. Do
+                # not zero that work's pending count.
+                if epoch_state["kind"] == "startup":
+                    _set_document_change_pending(finish_conn, 0)
+                    _set_resume_pending(finish_conn, False)
+                if running_reconcile and not live_content_allowed():
+                    finish_conn.rollback()
+                    return False
                 finish_conn.commit()
                 return True
             finally:
@@ -5163,6 +5388,8 @@ def start_document_change_worker(
         """Stop a reconcile as soon as its helper can no longer protect it."""
 
     def baseline_should_stop() -> bool:
+        if epoch_state["kind"] == "ignore_rules_reconcile":
+            reconcile_progress["at"] = time.monotonic()
         if process.stopping:
             return True
         if not reconcile_window_open():
@@ -5246,6 +5473,10 @@ def start_document_change_worker(
         )
 
     def stop_for_baseline_eligibility_loss() -> bool:
+        if epoch_state["kind"] == "ignore_rules_reconcile":
+            # Keep the channel alive. The durable request and partial coverage
+            # survive; the next allowed window retries under the same gates.
+            return False
         baseline_eligibility_lost.set()
         with baseline_epoch_lock:
             epoch_state["active"] = False
@@ -5319,11 +5550,56 @@ def start_document_change_worker(
                 barrier_results.pop(token, None)
             resume.set()
 
-    def perform_barriered_baseline(max_passes: int = DOCUMENT_BASELINE_MAX_PASSES) -> bool:
+    def wait_for_prior_pipeline(*, runtime: bool = False) -> bool:
+        deadline = time.monotonic() + 180
+        while not process.stopping:
+            if runtime:
+                reconcile_progress["at"] = time.monotonic()
+                if not reconcile_window_open():
+                    return False
+            probe = connect_readonly(database)
+            try:
+                pending = _document_change_pending_count(probe)
+            finally:
+                probe.close()
+            if (pending == 0 and validation_queue.empty() and processor_queue.empty()
+                    and stage_busy_since["validator"] is None and stage_busy_since["processor"] is None):
+                return True
+            if time.monotonic() >= deadline:
+                fatal_worker("helper_barrier_failed")
+                return False
+            time.sleep(0.05)
+        return False
+
+    @contextmanager
+    def paused_pipeline_barrier():
+        # No epoch/scan/coverage/SQLite lock may be held while waiting here.
+        token = uuid.uuid4().hex
+        waiter, resume = threading.Event(), threading.Event()
+        with barrier_lock:
+            barrier_results[token] = {"event": waiter, "resume": resume, "payload": None}
+        try:
+            if not process.request_barrier(token) or not waiter.wait(timeout=10):
+                fatal_worker("helper_barrier_failed")
+                yield None
+            elif not wait_for_prior_pipeline(runtime=True):
+                yield None
+            else:
+                with barrier_lock:
+                    payload = barrier_results.get(token, {}).get("payload")
+                yield payload
+        finally:
+            with barrier_lock:
+                barrier_results.pop(token, None)
+            resume.set()
+
+    def perform_barriered_baseline(max_passes: int = DOCUMENT_BASELINE_MAX_PASSES, *, epoch_roots=None) -> bool:
+        epoch_roots = roots if epoch_roots is None else epoch_roots
+        running_reconcile = epoch_state["kind"] == "ignore_rules_reconcile"
         with baseline_metrics_lock:
             baseline_metrics["max_passes"] = max(0, int(max_passes))
         maybe_emit_baseline_progress(stage="started", force=True)
-        baseline_authorization_epoch = begin_baseline_epoch()
+        baseline_authorization_epoch = begin_baseline_epoch(epoch_roots)
         if baseline_authorization_epoch is None:
             return False
         for attempt in range(max_passes):
@@ -5345,19 +5621,29 @@ def start_document_change_worker(
             with baseline_epoch_lock:
                 epoch_state["active"] = True
                 epoch_state["dirty"] = False
+                epoch_state["rules_dirty"] = False
                 scan_gap.clear()
+            request_conn = connect_readonly(database)
+            try:
+                requests = _ignore_reconcile_requests(request_conn)
+                request_versions = {str(item["root_id"]): requests.get(str(item["root_id"])) for item in epoch_roots}
+            finally:
+                request_conn.close()
             scan_complete = True
             any_root_scanned = False
             incomplete_roots: list[str] = []
             authorization_lost = False
             deferred_deletes_by_root: dict[str, dict[str, str]] = {}
-            for item in roots:
+            for item in epoch_roots:
                 root_id = str(item["root_id"])
                 deferred_delete_revisions: dict[str, str] = {}
                 baseline_conn = ensure_ready(database)
                 try:
                     try:
-                        with baseline_lock:
+                        # The runtime scanner owns only these roots after its
+                        # entry barrier. Holding the global scan lock for a
+                        # whole root would stall every other root's processor.
+                        with (nullcontext() if running_reconcile else baseline_lock):
                             if baseline_should_stop():
                                 raise BaselineInterrupted
                             metric_token = None
@@ -5387,7 +5673,7 @@ def start_document_change_worker(
                                     ),
                                     expected_epoch=baseline_authorization_epoch,
                                     deferred_delete_revisions=deferred_delete_revisions,
-                                    _progress_heartbeat=heartbeat,
+                                    _progress_heartbeat=None if running_reconcile else heartbeat,
                                 )
                             finally:
                                 if metric_token is not None:
@@ -5428,7 +5714,7 @@ def start_document_change_worker(
                     epoch_state["active"] = False
                 process.stop()
                 return False
-            if not scan_complete and not (final_attempt and any_root_scanned):
+            if not scan_complete and (running_reconcile or not (final_attempt and any_root_scanned)):
                 # build_document_baseline counts one unreadable file the same as
                 # a total failure: a single OSError anywhere under a root marks
                 # that root partial.  This used to `break`, abandoning the epoch
@@ -5473,6 +5759,8 @@ def start_document_change_worker(
                 barrier_result = barrier_results.pop(token, {})
                 barrier = barrier_result.get("payload")
             try:
+                if running_reconcile and not wait_for_prior_pipeline(runtime=True):
+                    return False
                 if not reconcile_window_open(force=True):
                     return stop_for_baseline_eligibility_loss()
                 with baseline_epoch_lock:
@@ -5486,12 +5774,14 @@ def start_document_change_worker(
                         epoch_state["dirty"] or scan_gap.is_set() or stream_gap.is_set()
                     )
                     accept_approximate = final_attempt and not stream_gap.is_set()
-                    if (not dirty or accept_approximate) and isinstance(barrier, dict):
+                    if (not dirty or accept_approximate) and not epoch_state["rules_dirty"] and isinstance(barrier, dict):
                         with baseline_lock:
                             finished = finish_baseline_epoch(
                                 barrier,
                                 baseline_authorization_epoch,
                                 deferred_deletes_by_root,
+                                epoch_roots,
+                                request_versions,
                             )
                         if finished:
                             epoch_state["active"] = False
@@ -5516,7 +5806,8 @@ def start_document_change_worker(
                 resume.set()
         with baseline_epoch_lock:
             epoch_state["active"] = False
-        mark_all_partial("baseline_not_clean")
+        mark_all_partial("baseline_not_clean", fatal=not running_reconcile,
+                         affects_attribution=True, root_ids=[str(item["root_id"]) for item in epoch_roots])
         return False
 
     if baseline_metrics_enabled:
@@ -5569,9 +5860,64 @@ def start_document_change_worker(
             "raw_access": False,
         }
 
+    @worker_connections.thread
+    def reconcile_requested_roots(epoch_roots) -> None:
+        nonlocal baseline_metrics_started_ns
+        try:
+            with paused_pipeline_barrier() as barrier:
+                if barrier is None or not reconcile_window_open(force=True):
+                    return
+                # The monitor snapshot may predate a successful request commit
+                # by the previous reconciler. Recheck after the entry barrier;
+                # a stale request must not start another scan of a covered root.
+                request_conn = connect_readonly(database)
+                try:
+                    pending_requests = _ignore_reconcile_requests(request_conn)
+                finally:
+                    request_conn.close()
+                epoch_roots = [item for item in epoch_roots if str(item["root_id"]) in pending_requests]
+                if not epoch_roots:
+                    return
+                selected_ids = {str(item["root_id"]) for item in epoch_roots}
+                # An empty pipeline is not permission to discard merged-write
+                # evidence. Let the normal processor settle that evidence first.
+                if any(_lexical_registry_root_id(roots, path) in selected_ids
+                       for path in superseded_debt_by_path):
+                    return
+                with baseline_epoch_lock:
+                    if process.stopping or stream_gap.is_set():
+                        return
+                    epoch_state.update(active=True, dirty=False, rules_dirty=False,
+                                       root_ids=selected_ids, kind="ignore_rules_reconcile")
+            if _transition_hook is not None:
+                _transition_hook("runtime_reconcile_started")
+            with baseline_metrics_emit_lock, baseline_metrics_lock:
+                for key in baseline_metrics:
+                    baseline_metrics[key] = 0
+                for counts in baseline_root_scan_issue_counts.values():
+                    counts.clear()
+                for counts in baseline_root_io_counts.values():
+                    counts.clear()
+                baseline_metrics_started_ns = time.monotonic_ns()
+                baseline_metrics_active.set()
+            perform_barriered_baseline(epoch_roots=epoch_roots)
+        except Exception:
+            fatal_worker("worker_monitor_exception")
+        finally:
+            # Finish any in-flight diagnostic before changing its scope. Never
+            # relabel counters from this target scan as a later startup scan.
+            with baseline_metrics_emit_lock:
+                baseline_metrics_active.clear()
+            with baseline_epoch_lock:
+                epoch_state.update(active=False, root_ids=None, kind="startup")
+            baseline_eligibility_lost.clear()
+            reconcile_progress["at"] = None
+
     registry_mtime = _registry_path(runtime_root).stat().st_mtime_ns if _registry_path(runtime_root).exists() else 0
+    reconcile_not_before = None
     @worker_connections.thread
     def monitor() -> None:
+        nonlocal reconcile_not_before
         try:
             while process.process is not None and process.process.poll() is None:
                 time.sleep(2)
@@ -5586,6 +5932,8 @@ def start_document_change_worker(
                     now = time.monotonic()
                     stalled = any(start is not None and now - start > HEARTBEAT_TTL_SECONDS
                                   for start in tuple(stage_busy_since.values()))
+                    stalled = stalled or (reconcile_progress["at"] is not None
+                                          and now - reconcile_progress["at"] > HEARTBEAT_TTL_SECONDS)
                     alive = all(thread.is_alive() for thread in (reader, consumer, validator, processor))
                     phase = "running" if alive and not stalled else "stalled"
                     if phase == "running" and any(stage_wait_reason.values()):
@@ -5608,6 +5956,7 @@ def start_document_change_worker(
                         "DELETE FROM file_watch_state WHERE present=0 AND datetime(updated_at)<datetime(?,'-30 seconds')",
                         (_now(),),
                     )
+                    requested = _ignore_reconcile_requests(state_conn)
                     state_conn.commit()
                 finally:
                     worker_connections.release(state_conn)
@@ -5615,6 +5964,22 @@ def start_document_change_worker(
                 if current_mtime != registry_mtime or authorized_ids != {str(item["root_id"]) for item in roots}:
                     process.stop()
                     return
+                reconciler = startup_worker["reconciler"]
+                requested_roots = [item for item in roots if str(item["root_id"]) in requested]
+                if requested_roots and not (reconciler and reconciler.is_alive()):
+                    if reconcile_not_before is None:
+                        reconcile_not_before = time.monotonic() + DOCUMENT_IGNORE_RECONCILE_COOLDOWN_SECONDS
+                    elif time.monotonic() >= reconcile_not_before and reconcile_window_open(force=True):
+                        reconcile_not_before = time.monotonic() + DOCUMENT_IGNORE_RECONCILE_COOLDOWN_SECONDS
+                        with baseline_epoch_lock:
+                            if not process.stopping:
+                                reconcile_progress["at"] = time.monotonic()
+                                reconciler = threading.Thread(target=reconcile_requested_roots,
+                                    args=(requested_roots,), name="pam-document-rule-reconcile", daemon=True)
+                                startup_worker["reconciler"] = reconciler
+                                reconciler.start()
+                elif not requested_roots:
+                    reconcile_not_before = None
                 # Incomplete coverage used to stop the helper here so the daemon
                 # would start a fresh barriered stream.  On a machine in use it
                 # is the permanent steady state -- benign directory churn marks
@@ -5630,7 +5995,7 @@ def start_document_change_worker(
             fatal_worker("worker_monitor_exception")
     monitor_thread = threading.Thread(target=monitor, name="pam-document-config-monitor", daemon=True)
     monitor_thread.start()
-    return {
+    startup_worker.update({
         "started": True,
         "root_count": len(roots),
         "process": process,
@@ -5652,7 +6017,8 @@ def start_document_change_worker(
             ),
         },
         "raw_access": False,
-    }
+    })
+    return startup_worker
 
 
 def _document_signal_path_hmac(conn: sqlite3.Connection, path: Path) -> str:
@@ -5688,6 +6054,20 @@ def _snapshot(
         raise PermissionError("display scope unavailable")
     if scope.hidden(str(path)):
         raise DisplaySourceRetired("source retired from local tracking")
+    # Document-only exclusions survive a migrated alias becoming a directory.
+    # Match whole ancestors, never path prefixes, before opening source bytes.
+    # This does not hide pending feedback/notifications mentioning that path.
+    secret = _existing_hmac_key_readonly(conn)
+    root_id = "root_" + _hmac(secret, str(root))[:32]
+    excluded = {row[0] for row in conn.execute(
+        "SELECT path_hmac FROM file_watch_root_exclusions WHERE root_id=?", (root_id,))}
+    if excluded:
+        normalized_root = _normalize_fixed_system_alias(root)
+        candidate = normalized_root / _lexical_relative_path(root, path)
+        while candidate != normalized_root:
+            if _document_subtree_hmac(secret, candidate) in excluded:
+                raise DisplaySourceRetired("source excluded from document tracking")
+            candidate = candidate.parent
     descriptor, relative = _open_file_beneath(root, path)
     recovery = None
     recovery_token = None
@@ -7072,6 +7452,14 @@ def _file_id_for_relative(conn: sqlite3.Connection, root: Path, relative: str) -
     return "file_" + _hmac(_hmac_key(conn), f"{_root_id(conn, root)}:{relative}")[:40]
 
 
+def _document_subtree_hmac(secret: bytes, path: Path) -> str:
+    # APFS commonly treats case and Unicode-normalization variants as the same
+    # path. Never permit those spellings to bypass a document-only exclusion.
+    import unicodedata
+    normalized = unicodedata.normalize("NFC", str(_normalize_fixed_system_alias(path))).casefold()
+    return _hmac(secret, "document-subtree-v1:" + normalized)
+
+
 def _lexical_relative_path(root: Path, path: Path) -> str:
     root_absolute = _normalize_fixed_system_alias(root)
     path_absolute = _normalize_fixed_system_alias(path)
@@ -7560,6 +7948,49 @@ def bump_document_change_epoch(conn: sqlite3.Connection) -> int:
         (str(value), _now()),
     )
     return value
+
+
+def _ignore_reconcile_requests(conn) -> dict[str, str]:
+    row = conn.execute("SELECT value FROM daemon_state WHERE key='document_ignore_reconcile_requests'").fetchone()
+    requests = json.loads(row[0]) if row else {}
+    if (not isinstance(requests, dict) or len(requests) > 1024
+            or any(not isinstance(key, str) or re.fullmatch(r"root_[0-9a-f]{32}", key) is None
+                   or not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{32}", value) is None
+                   for key, value in requests.items())):
+        raise ValueError("invalid_document_ignore_reconcile_requests")
+    return requests
+
+
+def _save_ignore_reconcile_requests(conn, requests) -> None:
+    conn.execute("INSERT INTO daemon_state(key,value,updated_at) VALUES('document_ignore_reconcile_requests',?,?) "
+                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",
+                 (json.dumps(requests, sort_keys=True, separators=(",", ":")), _now()))
+
+
+def _request_ignore_reconcile(conn, root_id: str) -> None:
+    requests = _ignore_reconcile_requests(conn)
+    if root_id not in requests and len(requests) >= 1024:
+        raise ValueError("document_ignore_reconcile_request_limit")
+    requests[root_id] = uuid.uuid4().hex
+    _save_ignore_reconcile_requests(conn, requests)
+
+
+def _clear_ignore_reconcile_requests(conn, covered_versions) -> None:
+    requests = _ignore_reconcile_requests(conn)
+    for root_id, version in covered_versions.items():
+        if version is not None and requests.get(root_id) == version:
+            del requests[root_id]
+    _save_ignore_reconcile_requests(conn, requests)
+
+
+def _lexical_registry_root_id(registry, path_text: str) -> str | None:
+    # Used only to choose the already-authorized scan gate, never to authorize
+    # filesystem/content access. The normal path still performs full resolution.
+    path = Path(path_text)
+    if not path.is_absolute() or ".." in path.parts:
+        return None
+    matches = [item for item in registry if path.is_relative_to(Path(str(item["path"])))]
+    return str(max(matches, key=lambda item: len(Path(str(item["path"])).parts))["root_id"]) if matches else None
 
 
 def _resume_pending(conn) -> bool:

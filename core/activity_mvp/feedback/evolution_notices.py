@@ -96,8 +96,8 @@ def compile_batch(events):
         validate_event(value); kind = value['kind']
         if kind == 'task_updated':
             name = TASKS[value['task']]
-            origin = '你安排的接线' if value['initial'] else 'AGI 主动发现变化'
-            actions.append(f"• {name}｜{origin}；{stage_text(value['task'], value['before'])} → {stage_text(value['task'], value['after'])}。依据：已登记验收回执及来源版本核对；原因：让下一次执行跟随项目进度；执行者：AGI 固定维护流程。")
+            origin = '你安排的接线' if value['initial'] else 'PSI 主动发现变化'
+            actions.append(f"• {name}｜{origin}；{stage_text(value['task'], value['before'])} → {stage_text(value['task'], value['after'])}。依据：已登记验收回执及来源版本核对；原因：让下一次执行跟随项目进度；执行者：PSI 固定维护流程。")
             files.append(f"• {name}：版本化任务说明，现为第 {value['version']} 版；原目标、时间、模型、权限和验收保持。")
             progress.append(f"• {name}：说明已更新；下一次真实定时执行使用新版本仍待验。未完成部分按原条件继续。")
         elif kind == 'task_run':
@@ -107,11 +107,11 @@ def compile_batch(events):
             progress.append(f"• {name}：{stage_text(value['task'], value['after'])}；{OUTCOMES[value['outcome']]}。原生读取记录本身不证明定时触发，也不代替整体验收。")
         elif kind == 'source_error':
             name = TASKS[value['task']]
-            actions.append(f"• {name}｜AGI 主动发现核查缺口；原可维护状态 → 证据或原调度绑定暂不能核对，保留原说明。依据：当前来源和身份检查；原因：防止旧状态覆盖新进度；执行者：AGI 固定维护流程。")
+            actions.append(f"• {name}｜PSI 主动发现核查缺口；原可维护状态 → 证据或原调度绑定暂不能核对，保留原说明。依据：当前来源和身份检查；原因：防止旧状态覆盖新进度；执行者：PSI 固定维护流程。")
             progress.append(f"• {name}：待核查；未降低标准、重开取消任务或代替本人选择。")
         elif kind == 'source_recovered':
             name = TASKS[value['task']]
-            actions.append(f'• {name}｜AGI 主动核查；此前来源或绑定缺口 → 当前读取核对恢复。依据：原登记范围、身份和来源指纹重新通过；原因：恢复安全维护；执行者：AGI 固定维护流程。')
+            actions.append(f'• {name}｜PSI 主动核查；此前来源或绑定缺口 → 当前读取核对恢复。依据：原登记范围、身份和来源指纹重新通过；原因：恢复安全维护；执行者：PSI 固定维护流程。')
             progress.append(f'• {name}：维护可继续；任务效果仍按原验收，不以恢复读取冒称完成。')
         elif kind == 'task_retired':
             name = TASKS[value['task']]
@@ -122,14 +122,14 @@ def compile_batch(events):
             before = REPAIR_STATES.get(value['before_state'], '此前阶段未记录，本轮首次核对的流程快照')
             changed = '、'.join(value['changed']) or '具体改动尚未形成可核对回执'
             proof = ('旧版故障已复现' if value['old_failed'] else '旧版复现依据待核') + '；' + ('候选专项通过' if value['candidate_passed'] else '候选专项待核')
-            actions.append(f"• AGI 软件修复｜受控流程记录：{before} → {REPAIR_STATES[value['state']]}；改动范围：{changed}。依据：受控修复账本及专项回执，{proof}；原因：处理原已登记缺陷，具体原因摘要未安全核对时保留缺口；执行者：AGI 受控修复器。")
+            actions.append(f"• PSI 软件修复｜受控流程记录：{before} → {REPAIR_STATES[value['state']]}；改动范围：{changed}。依据：受控修复账本及专项回执，{proof}；原因：处理原已登记缺陷，具体原因摘要未安全核对时保留缺口；执行者：PSI 受控修复器。")
             files.append('• ' + changed + '；完整差异和来源留在本机。')
             progress.append('• 该阶段仅证明账本记录；安装、回退和自然效果分别核验。没有完整证据前仍为未完成。')
         elif kind == 'baseline':
             restored = '已恢复' if value['identity_restored'] else '待验'
             installed = '已核对' if value['paired_installed'] else '待验'
-            actions.append(f'• 你安排的改动｜AGI 自身源码登记：旧快捷入口被身份检查阻断 → 当前真实目录识别{restored}。依据：同一身份检查入口的改前失败、改后读回；原因：让受控修复识别自己的项目；执行者：Codex。')
-            files.append('• AGI 项目登记、固定任务维护与通报模块、两项原定时任务说明和本机独立台账。')
+            actions.append(f'• 你安排的改动｜PSI 自身源码登记：旧快捷入口被身份检查阻断 → 当前真实目录识别{restored}。依据：同一身份检查入口的改前失败、改后读回；原因：让受控修复识别自己的项目；执行者：Codex。')
+            files.append('• PSI 项目登记、固定任务维护与通报模块、两项原定时任务说明和本机独立台账。')
             progress.append(f'• 本次配套安装{installed}；两项任务原工程阶段依据原负责人回执，历史修复不冒称自主发现；自然效果和下一次真实定时读取仍待验。无变化时保持安静。')
     body = '做了哪些事情\n' + '\n'.join(actions) + '\n\n修改了哪些文件\n' + '\n'.join(files or ['暂无可确认内容']) + '\n\n哪些项目有进展\n' + '\n'.join(progress)
     if len(body.encode()) > 18000: raise ValueError('safe_message_too_large')
@@ -323,11 +323,11 @@ def deliver_pending(ledger, client=None):
     try:
         try: fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError: return {'status': 'busy'}
-        target = target_for(ledger); client = client or Client(); client.preflight(target)
         # A killed process may have crossed the dispatch boundary. It is unknown.
         ledger.db.execute("UPDATE events SET state='unknown' WHERE state='dispatch_started'")
         unknown = ledger.db.execute("SELECT * FROM events WHERE state IN ('unknown','readback_pending') ORDER BY created LIMIT 1").fetchone()
         if unknown:
+            target = target_for(ledger); client = client or Client(); client.preflight(target)
             receipt = json.loads(unknown['receipt']); text = receipt['text']
             if receipt.get('target_sha256') != ledger.get('target_sha256'):
                 raise PermissionError('unknown_original_target_changed')
@@ -343,41 +343,11 @@ def deliver_pending(ledger, client=None):
             if not client.matches(client.get_message(mid), target, text): return {'status': 'readback_mismatch', 'replayed': False}
             complete_batch(ledger, receipt['events'], mid, receipt)
             return {'status': 'delivered', 'readback': True, 'reconciled': True}
-        # Progress remains in the local ledger. Preserve all already-attempted writes.
-        pending = ledger.db.execute("SELECT * FROM events WHERE state='pending' ORDER BY created").fetchall()
-        rows = []
-        for row in pending:
-            value = json.loads(row['payload'])
-            if value.get('kind') != 'functional_verified':
-                ledger.db.execute("UPDATE events SET state='local_only' WHERE id=? AND state='pending'", (row['id'],))
-                continue
-            if row['retry_at'] > time.time(): continue
-            if not current_functional(value): continue
-            rows = [row]; break
-        if not rows: return {'status': 'quiet'}
-        text = compile_functional(json.loads(rows[0]['payload']))
-        receipt = {'events': [r['id'] for r in rows], 'text': text, 'text_sha256': digest(text), 'target_sha256': ledger.get('target_sha256'), 'request_uuid': rows[0]['request_uuid']}
-        attempted = time.time()
-        with ledger.tx():
-            for row in rows:
-                if ledger.db.execute("UPDATE events SET state='dispatch_started',attempted=?,receipt=? WHERE id=? AND state='pending'", (attempted, packed(receipt), row['id'])).rowcount != 1:
-                    raise ValueError('delivery_queue_changed')
-        try: mid = client.send(target, text, rows[0]['request_uuid'])
-        except RejectedWrite as exc:
-            with ledger.tx():
-                for row in rows:
-                    ledger.db.execute("UPDATE events SET state='pending',retry_at=?,receipt=? WHERE id=?", (time.time() + 300, packed({**receipt, 'not_dispatched': True, 'remote_code': exc.code}), row['id']))
-            return {'status': 'not_dispatched', 'remote_code': exc.code}
-        except (UnknownWrite, OSError, RuntimeError):
-            ledger.db.execute("UPDATE events SET state='unknown' WHERE state='dispatch_started'")
-            return {'status': 'unknown', 'replayed': False}
-        with ledger.tx():
-            for row in rows: ledger.db.execute("UPDATE events SET state='readback_pending',message_id=? WHERE id=?", (mid, row['id']))
-        try:
-            if not client.matches(client.get_message(mid), target, text): return {'status': 'readback_mismatch', 'replayed': False}
-        except ReadUnavailable: return {'status': 'readback_pending', 'replayed': False}
-        complete_batch(ledger, receipt['events'], mid, receipt)
-        return {'status': 'delivered', 'readback': True, 'count': len(rows)}
+        # Ordinary completion/recovery remains local under the background-only
+        # owner preference. Already attempted deliveries above retain their
+        # original target/readback semantics; nothing is erased or replayed.
+        ledger.db.execute("UPDATE events SET state='local_only' WHERE state='pending'")
+        return {'status': 'quiet'}
     finally: os.close(fd)
 
 
@@ -416,7 +386,7 @@ def bootstrap_group(ledger, client=None):
         value = client.request('POST', '/im/v1/chats?' + urllib.parse.urlencode({'user_id_type': client.owner_type, 'set_bot_manager': 'true', 'uuid': intent['uuid']}),
                                {'name': NAME, 'owner_id': client.owner, 'user_id_list': [client.owner],
                                 'chat_mode': 'group', 'chat_type': 'private', 'external': False,
-                                'description': '由 Miso 通报 AGI 经证据核验的任务维护与受控改进；无变化保持安静。'})
+                                'description': '由 Miso 通报 PSI 经证据核验的任务维护与受控改进；无变化保持安静。'})
         cid = value.get('data', {}).get('chat_id')
         if not cid: raise UnknownWrite('group_create_missing_id')
         intent.update(chat_id=cid, state='created'); atomic(intent_path, packed(intent))

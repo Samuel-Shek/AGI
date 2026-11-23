@@ -59,3 +59,53 @@ class FeedbackPresentationTests(unittest.TestCase):
     def test_missing_tick_is_unknown_not_healthy(self):
         self.store.set('last_tick',None)
         self.assertEqual(progress(self.store,now=1100)['state'],'stale')
+    def test_blocked_analysis_is_not_current_even_after_successful_tick(self):
+        self.store.set('analysis_last_family','reflection')
+        self.store.set('analysis_last_result',{'status':'blocked','reason':'prior_input_unverifiable','processed':0})
+        self.store.set('last_tick_result',{'status':'ok'})
+        self.assertEqual(progress(self.store,now=1100)['state'],'error')
+    def test_other_family_and_idle_do_not_clear_unresolved_inputs(self):
+        from activity_mvp.feedback import health
+        self.store.set('analysis_last_family','reflection')
+        blocked={'status':'blocked','reason':'prior_input_unverifiable','processed':0}
+        self.store.set('analysis_last_result',blocked)
+        self.store.set('analysis_health',health.unresolved_analysis(self.store))
+        for result in ({'processed':5},{'processed':0,'status':'idle'}):
+            health.record_analysis(self.store,'feedback',result)
+            self.assertIn('reflection',health.unresolved_analysis(self.store))
+        health.record_analysis(self.store,'reflection',{'processed':0,'status':'idle'})
+        self.assertEqual(progress(self.store,now=1100)['state'],'error')
+        health.record_analysis(self.store,'reflection',{'processed':1,'status':'partial','reason':'prior_input_unresolved'})
+        self.assertEqual(progress(self.store,now=1100)['state'],'error')
+        health.record_analysis(self.store,'reflection',{'processed':1})
+        self.assertEqual(progress(self.store,now=1100)['state'],'current')
+    def test_idle_and_owner_pause_are_not_false_failures(self):
+        from activity_mvp.feedback import health
+        for result in ({'processed':0,'status':'idle','reason':'no_complete_context'},
+                       {'status':'paused'},{'status':'deferred','reason':'not_active'}):
+            self.assertEqual(health.record_analysis(self.store,'feedback',result),{})
+        self.store.set('paused',True)
+        self.assertEqual(progress(self.store,now=1100)['state'],'paused')
+    def test_legacy_scan_timeout_is_controller_not_previous_family(self):
+        from activity_mvp.feedback import health
+        self.store.set('analysis_last_family','reflection')
+        self.store.set('analysis_last_result',{'status':'deferred','reason':'local_check_timeout','phase':'feedback_scan'})
+        self.assertEqual(set(health.unresolved_analysis(self.store)),{'controller'})
+        self.store.set('analysis_health',health.unresolved_analysis(self.store))
+        health.record_analysis(self.store,'feedback',{'status':'idle','processed':0})
+        self.assertEqual(health.unresolved_analysis(self.store),{})
+        health.record_analysis(self.store,'reflection',{'status':'blocked','reason':'prior_input_unverifiable'})
+        health.record_analysis(self.store,'feedback',{'status':'idle','processed':0})
+        self.assertIn('reflection',health.unresolved_analysis(self.store))
+    def test_legacy_other_family_success_does_not_hide_reflection_replay_gap(self):
+        from activity_mvp.feedback import health
+        from activity_mvp.reflection.store import Store as ReflectionStore
+        with ReflectionStore(self.path.parent/'reflection') as reader:
+            reader.set('enabled',True)
+            reader.set('replay_gap','private fixture must not be copied')
+        self.store.set('analysis_last_family','feedback')
+        self.store.set('analysis_last_result',{'processed':5})
+        result=health.unresolved_analysis(self.store)
+        self.assertEqual(result['reflection']['reason'],'prior_input_unresolved')
+        self.assertNotIn('private fixture',str(result))
+        self.assertEqual(progress(self.store,now=1100)['state'],'error')

@@ -79,7 +79,7 @@ class V039StabilityTests(unittest.TestCase):
         self.conn.commit()
 
     def test_schema_and_transition_evidence_are_content_free_and_deduplicated(self) -> None:
-        self.assertEqual(SCHEMA_VERSION, 32)
+        self.assertEqual(SCHEMA_VERSION, 33)
         first = record_session_transition_evidence(
             self.conn,
             {
@@ -173,7 +173,9 @@ class V039StabilityTests(unittest.TestCase):
             "DROP TRIGGER pam_schema31_guard_insert;"
             "DROP TRIGGER pam_schema31_guard_update;"
             "DROP TRIGGER pam_schema32_guard_insert;"
+            "DROP TRIGGER pam_schema33_guard_insert;"
             "DROP TRIGGER pam_schema32_guard_update;"
+            "DROP TRIGGER pam_schema33_guard_update;"
         )
         original.execute("UPDATE meta SET value='27' WHERE key='schema_version'")
         original.commit()

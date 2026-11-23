@@ -19,10 +19,23 @@ def main():
     if not isinstance(payload,dict):raise ValueError('payload_object_required')
     if args.action=='status':
         try:
-            with Store(root,readonly=True) as store:
-                from .presentation import progress
-                from ..presentation_scope import project_for_runtime
-                return project_for_runtime({**store.snapshot(), 'progress': progress(store)}, root.parent)
+            from ..conversation_scope import personal_scope
+            from ..retirement_snapshot import CURRENT, source_snapshot
+            from ..presentation_scope import display_scope, project_for_runtime
+            current = CURRENT.get()
+            if current is not None and getattr(current, 'sources', None) is not personal_scope:
+                raise ValueError('feedback_status_source_snapshot_mismatch')
+            with source_snapshot(personal_scope) as source, display_scope(root.parent) as shown:
+                if shown.policy_view() is not source:
+                    raise ValueError('feedback_status_display_snapshot_mismatch')
+                with Store(root,readonly=True) as store:
+                    from .presentation import progress
+                    result = project_for_runtime({**store.snapshot(), 'progress': progress(store)}, root.parent)
+                if not source.unchanged():
+                    raise ValueError('source_policy_changed_during_projection')
+                if not shown.unchanged() or not shown.memory_unchanged():
+                    raise ValueError('display_policy_changed_during_projection')
+                return result
         except FileNotFoundError:return {'status':'not_configured','enabled':False,'paused':True,'incidents':[],'sources':[],'decisions':[]}
         except __import__('sqlite3').OperationalError:return {'status':'unavailable','enabled':False,'paused':True,'reason':'ledger_read_failed','incidents':[],'sources':[],'decisions':[]}
     if args.action=='detail':
@@ -63,8 +76,8 @@ def main():
             if not (repo/'.git').exists() or not (repo/'core/activity_mvp').is_dir():raise ValueError('repository_missing')
             if not journal.name=='批评与改进':raise ValueError('journal_scope')
             config={**payload,'repository':str(repo),'journal':str(journal),'enabled':True,'enabled_at':time.time(),
-                'since':time.time()-30*86400,'live_core':str(Path.home()/'Library/Application Support/Personal AI Monitor/core'),
-                'application':'/Applications/AGI.app','hermes_owner_ids':{},'analysis_limit':None,'repair_limit':1,'revision_limit':2}
+                'since':time.time()-30*86400,'live_core':str(Path.home()/'Library/Application Support/PSI/core'),
+                'application':'/Applications/PSI.app','hermes_owner_ids':{},'analysis_limit':None,'repair_limit':1,'revision_limit':2}
             store.set('config',config);store.set('paused',False)
             from .sources import register
             from .journal import import_seed,render

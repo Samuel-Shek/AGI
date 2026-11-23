@@ -15,8 +15,8 @@ from .canonical_paths import discover_frozen_pam_ledger_paths, frozen_pam_ledger
 # Retained only for callers importing the historical constant.  Resolution is
 # centralized in canonical_paths and the resulting ledger is read-only.
 DEFAULT_LEDGER_RELATIVE_PATH = Path("✦ AI 工作台") / "PAM 长期记忆台账（已停更）.md"
-DEFAULT_DETAIL_RELATIVE_PATH = Path("Library/Application Support/Personal AI Monitor/memory-ledger/PAM 长期记忆详细记录.md")
-DEFAULT_BACKUP_RELATIVE_PATH = Path("Library/Application Support/Personal AI Monitor/memory-ledger-backups")
+DEFAULT_DETAIL_RELATIVE_PATH = Path("Library/Application Support/PSI/memory-ledger/PAM 长期记忆详细记录.md")
+DEFAULT_BACKUP_RELATIVE_PATH = Path("Library/Application Support/PSI/memory-ledger-backups")
 DELETE_CONFIRM = "DELETE_PAM_MEMORY"
 REWRITE_CONFIRM = "REWRITE_PAM_MEMORY"
 FROZEN_LEDGER_STATUS = "frozen_legacy"

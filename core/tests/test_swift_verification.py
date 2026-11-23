@@ -1,7 +1,11 @@
 import json
+from contextlib import contextmanager
 from pathlib import Path
+import plistlib
+import stat
 import subprocess
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -9,6 +13,84 @@ from activity_mvp.feedback import project_repair as repair, swift_verification a
 
 
 class SwiftVerificationTests(unittest.TestCase):
+    @contextmanager
+    def fixed_toolchain_fixture(self, version='27.2', identifier='com.apple.dt.Xcode', mutable=False):
+        # All contents are synthetic; root ownership is represented only for
+        # these fixture paths. No installed Xcode or real signature is used.
+        with tempfile.TemporaryDirectory() as temp:
+            app=Path(temp)/'Xcode.app';developer=app/'Contents/Developer'
+            compiler=developer/'Toolchains/XcodeDefault.xctoolchain/usr/bin/swift-frontend'
+            compiler.parent.mkdir(parents=True);compiler.write_bytes(b'synthetic compiler')
+            info=app/'Contents/Info.plist'
+            info.write_bytes(plistlib.dumps({'CFBundleIdentifier':identifier,
+                'CFBundleShortVersionString':version}))
+            seal=app/'Contents/_CodeSignature/CodeResources'
+            seal.parent.mkdir();seal.write_bytes(b'synthetic seal')
+            sdk=Path(temp)/'SDK';sdk.mkdir();(sdk/'SDKSettings.json').write_text('{}')
+            real_lstat=Path.lstat;real_stat=Path.stat
+            def metadata(path, original, *args, **kwargs):
+                path=Path(path)
+                if path==Path('/Applications'):
+                    return SimpleNamespace(st_mode=stat.S_IFDIR|0o755,st_uid=0)
+                result=original(path,*args,**kwargs)
+                if path==app or app in path.parents:
+                    mode=result.st_mode|(0o020 if mutable and path==developer else 0)
+                    return SimpleNamespace(st_mode=mode,st_uid=0)
+                return result
+            with patch.object(swift,'XCODE',app),patch.object(swift,'DEVELOPER',developer),\
+                 patch.object(Path,'lstat',lambda path,*a,**kw:metadata(path,real_lstat,*a,**kw)),\
+                 patch.object(Path,'stat',lambda path,*a,**kw:metadata(path,real_stat,*a,**kw)),\
+                 patch.object(repair,'trusted_swift_sdk',return_value=sdk),\
+                 patch.object(swift.subprocess,'run',return_value=subprocess.CompletedProcess([],0,b'',b'')) as signature:
+                yield app,signature
+
+    def test_fixed_current_official_toolchain_is_accepted(self):
+        with self.fixed_toolchain_fixture() as (app,signature):
+            try:
+                actual=swift.toolchain_identity(verify_signature=True)
+            except PermissionError as error:
+                self.fail('fixed current version rejected: '+str(error))
+            self.assertEqual(actual['version'],'27.2')
+            self.assertEqual(actual['developer'],str(app/'Contents/Developer'))
+            self.assertEqual(len(actual['compiler_sha256']),64)
+            signature.assert_called_once()
+            self.assertIn('=anchor apple generic and identifier "com.apple.dt.Xcode"',signature.call_args.args[0])
+
+    def test_other_versions_and_bundle_identity_remain_rejected(self):
+        for version,identifier in [('27.0','com.apple.dt.Xcode'),('27.1','com.apple.dt.Xcode'),
+                ('27.3','com.apple.dt.Xcode'),('28.0','com.apple.dt.Xcode'),
+                ('27.1 beta','com.apple.dt.Xcode'),('27.2 beta','com.apple.dt.Xcode'),
+                ('27.2','other.bundle')]:
+            with self.subTest(version=version,identifier=identifier):
+                with self.fixed_toolchain_fixture(version,identifier) as (_,signature):
+                    with self.assertRaisesRegex(PermissionError,'version_unapproved'):
+                        swift.toolchain_identity(verify_signature=True)
+                    signature.assert_not_called()
+
+    def test_signature_mutability_and_info_alias_still_fail_closed(self):
+        with self.fixed_toolchain_fixture(mutable=True):
+            with self.assertRaisesRegex(PermissionError,'not_trusted'):
+                swift.toolchain_identity(verify_signature=True)
+        with self.fixed_toolchain_fixture() as (_,signature):
+            signature.side_effect=subprocess.CalledProcessError(1,['synthetic signature check'])
+            with self.assertRaises(subprocess.CalledProcessError):
+                swift.toolchain_identity(verify_signature=True)
+        with self.fixed_toolchain_fixture() as (app,signature):
+            info=app/'Contents/Info.plist';info.rename(info.with_name('original.plist'))
+            info.symlink_to('original.plist')
+            with self.assertRaisesRegex(PermissionError,'toolchain_alias'):
+                swift.toolchain_identity(verify_signature=True)
+            signature.assert_not_called()
+
+    def test_previous_toolchain_checkpoint_is_not_reused_after_version_change(self):
+        with tempfile.TemporaryDirectory() as temp:
+            logs=Path(temp);result=subprocess.CompletedProcess([],0,'','')
+            result.swift_test_evidence=self.evidence()
+            result.swift_test_evidence['toolchain']={'version':'27.1','compiler_sha256':'unchanged'}
+            gate=swift.save(logs,result)
+            with patch.object(swift,'toolchain_identity',return_value={'version':'27.2','compiler_sha256':'unchanged'}):
+                self.assertFalse(swift.checkpoint_valid(logs,gate))
+
     def evidence(self):
         # Synthetic unit fixture; real release evidence is generated by the
         # existing exact-list shell gate and retained separately.

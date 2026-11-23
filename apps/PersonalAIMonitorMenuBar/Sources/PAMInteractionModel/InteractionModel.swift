@@ -6,6 +6,7 @@ public enum AppTab: Hashable, CaseIterable, Identifiable {
     case reflection
     case evolution
     case confirmations
+    case workbench
     case fileHistory
     case review
     case memoryReview
@@ -21,6 +22,7 @@ public enum AppTab: Hashable, CaseIterable, Identifiable {
         case .reflection: return "思考与反思"
         case .evolution: return "自主进化"
         case .confirmations: return "需要你决定"
+        case .workbench: return "事项工作台"
         case .fileHistory: return "记录"
         case .review: return "回顾"
         case .memoryReview: return "记忆库"
@@ -36,6 +38,7 @@ public enum AppTab: Hashable, CaseIterable, Identifiable {
         case .reflection: return "lightbulb"
         case .evolution: return "arrow.triangle.2.circlepath"
         case .confirmations: return "questionmark.bubble"
+        case .workbench: return "tray.full"
         case .fileHistory: return "clock.arrow.circlepath"
         case .review: return "doc.text.magnifyingglass"
         case .memoryReview: return "brain"
@@ -47,7 +50,7 @@ public enum AppTab: Hashable, CaseIterable, Identifiable {
 
     public var navigationGroup: AppNavigationGroup {
         switch self {
-        case .today, .reflection, .evolution, .confirmations, .fileHistory, .review, .memoryReview:
+        case .today, .reflection, .evolution, .confirmations, .workbench, .fileHistory, .review, .memoryReview:
             return .daily
         case .systemStatus, .privacy, .settings:
             return .management
@@ -55,7 +58,7 @@ public enum AppTab: Hashable, CaseIterable, Identifiable {
     }
 
     public static var dailyTabs: [AppTab] {
-        [.today, .reflection, .confirmations, .fileHistory, .memoryReview, .evolution]
+        [.today, .reflection, .confirmations, .workbench, .fileHistory, .memoryReview, .evolution]
     }
 
     public static var managementTabs: [AppTab] {
@@ -1170,7 +1173,7 @@ public enum ActivityConfirmationCommandBuilder {
 }
 
 public enum ActivityConfirmationNotificationPolicy {
-    public static let title = "AGI"
+    public static let title = "PSI"
     public static let highValueBody = "有一项高优先活动需要你在本机确认。"
     public static let batchBody = "今天还有活动需要你在本机确认。"
 
@@ -1203,7 +1206,7 @@ public enum ActivityConfirmationFilterReasonPresentation {
         case "task_list": return "任务列表"
         case "context_only": return "仅上下文"
         case "ai_or_tool_status": return "AI / 工具状态"
-        case "pam_self_ui": return "AGI 自身界面"
+        case "pam_self_ui": return "PSI 自身界面"
         case "conditional_or_negated": return "条件式或否定表述"
         case "game_ui": return "游戏界面"
         case "privacy_blocked": return "隐私保护"

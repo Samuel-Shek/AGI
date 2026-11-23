@@ -18,6 +18,11 @@ jobs:
       - name: Portable core boundaries
         working-directory: core
         run: python3 -B -m unittest discover -s tests -p 'test_public_snapshot.py'
+      - name: Workbench and recovery boundaries
+        run: |
+          python3 -B -m unittest discover -s apps/PSISyncCenter/tests
+          node apps/PSISyncCenter/tests/frontend_check.js apps/PSISyncCenter/static
+          (cd core && python3 -B -m unittest tests.test_recovery_provenance)
       - name: Evolution engine
         working-directory: core/evolution
         run: python3 -B -m unittest discover -s tests

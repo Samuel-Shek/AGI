@@ -42,7 +42,7 @@ def incident_body(incident,quotes):
     text+='## 原因判断\n\n'+(incident['cause'] or '尚未查明，不能仅据抱怨认定技术根因。')+'\n\n'
     text+='## 实际改进\n\n'+(incident['fix'] or '尚无可核实的修复记录。')+'\n\n'
     text+='## 验证与剩余问题\n\n'+(incident['gap'] or '等待与本问题对应的实际验证。')+'\n\n'
-    if incident['related']:text+='关联问题可在 AGI 中查看；关联不等于已证实复发。\n\n'
+    if incident['related']:text+='关联问题可在 PSI 中查看；关联不等于已证实复发。\n\n'
     text+='归档不是共享长期记忆，也不代表已获准修改规则或记忆审核决定。\n'
     return text
 

@@ -147,11 +147,23 @@ class TaskMaintenanceTests(unittest.TestCase):
         saved = json.loads(self.ledger.db.execute('SELECT result FROM uses WHERE id=?', (key,)).fetchone()[0])
         self.assertEqual(saved['source'], self.ledger.get('latest_source:agi')['source'])
         self.assertEqual(self.ledger.db.execute('SELECT count(*) FROM events').fetchone()[0], 1)
+    def test_current_turn_change_before_run_commit_preserves_unrecorded_result(self):
+        self.ledger.set('enabled', True); key = self._use()
+        first = {'session': 'original', 'turn': 'turn'}
+        second = {'session': 'original', 'turn': 'replacement'}
+        with patch.object(tasks, 'authorized', return_value=(self.ledger.root, self._conf())), \
+                patch.object(tasks, 'native_context', side_effect=[first, second]):
+            with self.assertRaisesRegex(PermissionError, 'current_native_turn_changed'):
+                tasks.record_run(None, 'agi', self._payload())
+        self.assertIsNone(self.ledger.db.execute('SELECT result FROM uses WHERE id=?', (key,)).fetchone()[0])
+        self.assertIsNone(self.ledger.get('latest_source:agi'))
+        self.assertEqual(self.ledger.db.execute('SELECT count(*) FROM events').fetchone()[0], 0)
     def test_older_run_cannot_replace_newer_recorded_result(self):
         old = self._use(); newer = self._use('newer', 2)
         self.ledger.db.execute('UPDATE uses SET result=? WHERE id=?', (packed({'outcome': 'partial'}), newer))
         receipt, ref = tasks.checked_source('agi', self.source); stages = tasks.normalize('agi', receipt)
-        with self.assertRaisesRegex(ValueError, 'newer_native'):
+        with patch.object(tasks, 'native_context', return_value={'session': 'original', 'turn': 'turn'}), \
+                self.assertRaisesRegex(ValueError, 'newer_native'):
             tasks._record_run_locked(self.ledger, self._conf(), 'agi', {'session': 'original', 'turn': 'turn'}, self._payload(), stages, ref, None)
         self.assertIsNone(self.ledger.db.execute('SELECT result FROM uses WHERE id=?', (old,)).fetchone()[0])
     def test_newer_spec_withdraws_old_run_adoption(self):
@@ -159,7 +171,8 @@ class TaskMaintenanceTests(unittest.TestCase):
         self.write({**self.receipt, 'at': 2, 'natural_effectiveness_accepted': True})
         tasks.refresh(self.ledger, 'agi', self.binding)
         receipt, ref = tasks.checked_source('agi', self.source)
-        with self.assertRaisesRegex(ValueError, 'current_task_version_changed'):
+        with patch.object(tasks, 'native_context', return_value={'session': 'original', 'turn': 'turn'}), \
+                self.assertRaisesRegex(ValueError, 'current_task_version_changed'):
             tasks._record_run_locked(self.ledger, self._conf(), 'agi', {'session': 'original', 'turn': 'turn'}, self._payload(), tasks.normalize('agi', receipt), ref, None)
         self.assertIsNone(self.ledger.db.execute('SELECT result FROM uses WHERE id=?', (key,)).fetchone()[0])
     def test_complete_stages_alone_do_not_authorize_native_retirement(self):
@@ -202,6 +215,32 @@ class TaskMaintenanceTests(unittest.TestCase):
             self.assertEqual(actual['hook_turn'], context['turn'])
             self.assertEqual(actual['hook_task_id'], 'hook-task')
             self.assertNotIn('task_id', actual)
+            self.assertTrue(ipc.return_value.__enter__.return_value.snapshot.call_args.kwargs['allow_registered_worktree'])
+            ipc.reset_mock()
+            with self.assertRaisesRegex(PermissionError, 'original_native_owner_required'):
+                tasks.native_context('unregistered-task', self._conf())
+            ipc.assert_not_called()
+
+    def test_current_turn_change_before_use_transaction_does_not_record_use(self):
+        first = {'session': 'original', 'turn': 'first'}
+        second = {'session': 'original', 'turn': 'second'}
+        with patch.object(tasks, 'native_context', side_effect=[first, second]):
+            with self.assertRaisesRegex(PermissionError, 'current_native_turn_changed'):
+                tasks._load_task_locked(self.ledger, 'agi', self._conf())
+        self.assertEqual(self.ledger.db.execute('SELECT count(*) FROM uses').fetchone()[0], 0)
+
+    def test_native_rechecks_do_not_hold_database_writer_transaction(self):
+        context = {'session': 'original', 'turn': 'turn'}
+        def checked(*args):
+            self.assertFalse(self.ledger.db.in_transaction)
+            return context
+        with patch.object(tasks, 'native_context', side_effect=checked):
+            loaded = tasks._load_task_locked(self.ledger, 'agi', self._conf())
+            receipt, ref = tasks.checked_source('agi', self.source)
+            result = tasks._record_run_locked(self.ledger, self._conf(), 'agi', context,
+                {**self._payload(), 'used_version': loaded['spec']['version']},
+                tasks.normalize('agi', receipt), ref, None)
+        self.assertTrue(result['recorded'])
 
     def test_stale_hook_root_allows_next_turn_to_load_new_spec_without_rewriting_first_use(self):
         from activity_mvp.task_closure import Store as ClosureStore
@@ -286,69 +325,65 @@ class NoticeTests(unittest.TestCase):
         for private in ['客户名称', '/Users/private', 'password', 'oc_private']:
             with self.assertRaises(ValueError): notices.compile_batch([{**self.event, 'raw': private}])
         with self.assertRaises(ValueError): notices.compile_batch([{'kind': 'source_error', 'task': '客户名称'}])
-    def test_dedup_and_real_id_full_readback(self):
-        self.ledger.event(self.event); self.ledger.event(self.event)
-        result = notices.deliver_pending(self.ledger, self.client)
-        self.assertTrue(result['readback']); self.assertEqual(self.state(), 'delivered')
-        notices.deliver_pending(self.ledger, self.client)
-        self.assertEqual(len(self.client.sent), 1)
-        self.assertEqual(self.ledger.db.execute('SELECT message_id FROM events').fetchone()[0], 'real-id')
+    def seed_attempt(self, state='unknown', mid=''):
+        key=self.ledger.event(self.event);text=notices.compile_functional(self.event)
+        receipt={'text':text,'events':[key],'target_sha256':self.ledger.get('target_sha256')}
+        self.ledger.db.execute("UPDATE events SET state=?,attempted=1,receipt=?,message_id=? WHERE id=?",(state,packed(receipt),mid,key))
+        return text
+    def test_ordinary_completed_and_recovered_events_stay_local(self):
+        self.ledger.event(self.event);self.ledger.event(self.event)
+        self.ledger.event({'kind':'source_recovered','task':'agi'})
+        with patch.object(self.client,'preflight',side_effect=AssertionError('no remote request')):
+            self.assertEqual(notices.deliver_pending(self.ledger,self.client)['status'],'quiet')
+        self.assertEqual({r[0] for r in self.ledger.db.execute('SELECT state FROM events')},{'local_only'})
+        self.assertEqual(self.client.sent,[])
     def test_timeout_reconciles_original_request_without_resend(self):
-        self.ledger.event(self.event); self.client.unknown = True
-        self.assertEqual(notices.deliver_pending(self.ledger, self.client)['status'], 'unknown')
-        self.assertEqual(self.state(), 'unknown'); self.client.unknown = False
-        self.assertTrue(notices.deliver_pending(self.ledger, self.client)['reconciled'])
-        self.assertEqual(len(self.client.sent), 1)
+        text=self.seed_attempt();self.client.messages['real-id']=text
+        self.assertTrue(notices.deliver_pending(self.ledger,self.client)['reconciled'])
+        self.assertEqual(self.state(),'delivered');self.assertEqual(self.client.sent,[])
     def test_unknown_without_match_never_replayed(self):
-        self.ledger.event(self.event); self.client.unknown = True
-        notices.deliver_pending(self.ledger, self.client); self.client.messages.clear()
-        for _ in range(3): self.assertEqual(notices.deliver_pending(self.ledger, self.client)['status'], 'unknown')
-        self.assertEqual(len(self.client.sent), 1)
+        self.seed_attempt()
+        for _ in range(3):self.assertEqual(notices.deliver_pending(self.ledger,self.client)['status'],'unknown')
+        self.assertEqual(self.client.sent,[])
     def test_killed_dispatch_does_not_resend(self):
-        key = self.ledger.event(self.event); text = notices.compile_functional(self.event)
-        receipt = {'text': text, 'events': [key], 'target_sha256': self.ledger.get('target_sha256')}
-        self.ledger.db.execute("UPDATE events SET state='dispatch_started',attempted=1,receipt=?", (packed(receipt),))
-        self.assertEqual(notices.deliver_pending(self.ledger, self.client)['status'], 'unknown')
-        self.assertEqual(len(self.client.sent), 0)
+        self.seed_attempt('dispatch_started')
+        self.assertEqual(notices.deliver_pending(self.ledger,self.client)['status'],'unknown')
+        self.assertEqual(self.client.sent,[])
     def test_readback_failure_does_not_resend(self):
-        self.ledger.event(self.event); self.client.readfail = True
-        self.assertEqual(notices.deliver_pending(self.ledger, self.client)['status'], 'readback_pending')
-        self.client.readfail = False
-        self.assertTrue(notices.deliver_pending(self.ledger, self.client)['readback'])
-        self.assertEqual(len(self.client.sent), 1)
+        text=self.seed_attempt('readback_pending','real-id');self.client.messages['real-id']=text;self.client.readfail=True
+        with self.assertRaises(notices.ReadUnavailable):notices.deliver_pending(self.ledger,self.client)
+        self.assertEqual(self.state(),'readback_pending');self.client.readfail=False
+        self.assertTrue(notices.deliver_pending(self.ledger,self.client)['readback']);self.assertEqual(self.client.sent,[])
     def test_matching_body_alone_does_not_resolve_unknown_original_request(self):
-        self.ledger.event(self.event); self.client.unknown = True
-        notices.deliver_pending(self.ledger, self.client)
-        with patch.object(self.client, 'reconcile', return_value={'candidate_message_id': 'similar-id', 'original_request_verified': False}):
-            result = notices.deliver_pending(self.ledger, self.client)
-        self.assertEqual(result['status'], 'unknown'); self.assertEqual(self.state(), 'unknown')
-        self.assertTrue(result['matching_candidate_only']); self.assertEqual(len(self.client.sent), 1)
-    def test_explicit_remote_reject_is_not_dispatched_and_delays_retry(self):
-        self.ledger.event(self.event); self.client.reject = True
-        self.assertEqual(notices.deliver_pending(self.ledger, self.client)['status'], 'not_dispatched')
-        self.assertEqual(self.state(), 'pending')
-        self.client.reject = False
-        self.assertEqual(notices.deliver_pending(self.ledger, self.client)['status'], 'quiet')
-        self.assertEqual(len(self.client.sent), 1)
-    def test_group_membership_change_blocks_before_post(self):
-        self.ledger.event(self.event)
-        with patch.object(self.client, 'preflight', side_effect=PermissionError('member_changed')):
-            with self.assertRaises(PermissionError): notices.deliver_pending(self.ledger, self.client)
-        self.assertEqual(len(self.client.sent), 0); self.assertEqual(self.state(), 'pending')
+        self.seed_attempt()
+        with patch.object(self.client,'reconcile',return_value={'candidate_message_id':'similar-id','original_request_verified':False}):
+            result=notices.deliver_pending(self.ledger,self.client)
+        self.assertEqual(result['status'],'unknown');self.assertEqual(self.state(),'unknown')
+        self.assertTrue(result['matching_candidate_only']);self.assertEqual(self.client.sent,[])
+    def test_known_unsubmitted_pending_event_is_retained_without_retry(self):
+        key=self.ledger.event(self.event)
+        receipt=packed({'not_dispatched':True,'remote_code':230006})
+        self.ledger.db.execute('UPDATE events SET receipt=? WHERE id=?',(receipt,key))
+        self.assertEqual(notices.deliver_pending(self.ledger,self.client)['status'],'quiet')
+        self.assertEqual(self.ledger.db.execute('SELECT receipt FROM events WHERE id=?',(key,)).fetchone()[0],receipt)
+        self.assertEqual(self.client.sent,[])
+    def test_group_membership_change_blocks_unknown_reconciliation(self):
+        self.seed_attempt()
+        with patch.object(self.client,'preflight',side_effect=PermissionError('member_changed')):
+            with self.assertRaises(PermissionError):notices.deliver_pending(self.ledger,self.client)
+        self.assertEqual(self.client.sent,[]);self.assertEqual(self.state(),'unknown')
     def test_progress_is_local_and_stale_proof_never_sends(self):
         self.ledger.event({'kind':'baseline','identity_restored':True,'paired_installed':True})
         self.ledger.event(self.event)
         with patch.object(notices,'current_functional',return_value=False):
             self.assertEqual(notices.deliver_pending(self.ledger,self.client)['status'],'quiet')
-        self.assertEqual(len(self.client.sent),0)
-        states={r[0] for r in self.ledger.db.execute('SELECT state FROM events')}
-        self.assertEqual(states,{'pending','local_only'})
-    def test_each_delivery_contains_one_improvement(self):
-        self.ledger.event(self.event)
-        self.ledger.event({**self.event,'job':'5'*24,'contract':'timestamp_format'})
-        self.assertEqual(notices.deliver_pending(self.ledger,self.client)['count'],1)
-        self.assertEqual(len(self.client.sent),1)
-        self.assertEqual(self.ledger.db.execute("SELECT count(*) FROM events WHERE state='pending'").fetchone()[0],1)
+        self.assertEqual(self.client.sent,[])
+        self.assertEqual({r[0] for r in self.ledger.db.execute('SELECT state FROM events')},{'local_only'})
+    def test_multiple_completions_remain_local(self):
+        self.ledger.event(self.event);self.ledger.event({**self.event,'job':'5'*24,'contract':'timestamp_format'})
+        self.assertEqual(notices.deliver_pending(self.ledger,self.client)['status'],'quiet')
+        self.assertEqual(self.client.sent,[])
+        self.assertEqual(self.ledger.db.execute("SELECT count(*) FROM events WHERE state='local_only'").fetchone()[0],2)
     def test_foreign_sender_and_target_never_match(self):
         client = object.__new__(notices.Client); client.app_id = 'app'
         target = {'chat_id': 'group', 'bot_open_id': 'bot'}

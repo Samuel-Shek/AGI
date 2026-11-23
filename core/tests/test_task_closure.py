@@ -1,3 +1,4 @@
+from tests.closure_legacy_fixture import legacy_begin
 import json
 import sqlite3
 import tempfile
@@ -24,7 +25,7 @@ class ClosureTests(unittest.TestCase):
         self.store.conn.close(); self.tmp.cleanup()
 
     def begin(self, platform="codex", turn="original"):
-        return self.store.begin({"platform": platform, "session": "test-session", "turn": turn,
+        return legacy_begin(self.store, {"platform": platform, "session": "test-session", "turn": turn,
             "objective": "修好主任务且处理本轮发现", "scope_root": str(self.root), "complex": True})["task_id"]
 
     def issue(self, key="fixture", category="independent", **extra):

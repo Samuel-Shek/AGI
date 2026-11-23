@@ -198,7 +198,9 @@ class Phase3Fixture(unittest.TestCase):
                 conn.execute(f'DROP TABLE "{table}"')
             for trigger in (
                 "pam_schema32_guard_insert",
+                "pam_schema33_guard_insert",
                 "pam_schema32_guard_update",
+                "pam_schema33_guard_update",
                 "pam_schema31_guard_insert",
                 "pam_schema31_guard_update",
                 "pam_schema30_guard_insert",

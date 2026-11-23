@@ -1,4 +1,4 @@
-"""AGI local-first personal context recall core."""
+"""PSI local-first personal context recall core."""
 
 __all__ = ["__version__"]
 

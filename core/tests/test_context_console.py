@@ -793,7 +793,7 @@ class ContextConsoleTests(unittest.TestCase):
 
     def test_feature_flags_and_existing_writers_remain_fail_closed(self) -> None:
         self.assertFalse(self.default_enabled)
-        self.assertEqual(SCHEMA_VERSION, 32)
+        self.assertEqual(SCHEMA_VERSION, 33)
         self.assertFalse(DEFAULT_HA_AUTO_ENABLED)
         self.assertFalse(CONTROLLED_MEM0_WRITER_ENABLED)
         settings = dict(
@@ -2924,25 +2924,32 @@ class ContextConsoleTests(unittest.TestCase):
             subject_ref=self.owner,
             privacy_class="private_local",
         )
-        adapter = report_context_bundle_adapter(
-            self.conn,
-            start_at=(self.now - timedelta(minutes=1)).isoformat(timespec="seconds"),
-            end_at=(self.now + timedelta(minutes=1)).isoformat(timespec="seconds"),
-        )
-        self.assertEqual(adapter["contract_version"], CONTEXT_BUNDLE_VERSION)
-        self.assertEqual(adapter["unverified_clues"], [])
-        self.assertEqual([item["source_ref"] for item in adapter["verified_contexts"]], ["source_61000002"])
-        self.assertEqual(len(adapter["verified_contexts"]), 1)
-        self.assertTrue(adapter["verified_contexts"][0]["context_ref"].startswith("context_"))
-        self.assertNotEqual(adapter["verified_contexts"][0]["context_ref"], accepted["verified_ref"])
+        # Keep this projection test on its July fixture clock; wall-clock
+        # expiry is covered separately and must not age this fixture out.
+        aware_utc = context_console_module._aware_utc
+        with mock.patch.object(
+            context_console_module, "_aware_utc",
+            side_effect=lambda value: aware_utc(self.now if value is None else value),
+        ):
+            adapter = report_context_bundle_adapter(
+                self.conn,
+                start_at=(self.now - timedelta(minutes=1)).isoformat(timespec="seconds"),
+                end_at=(self.now + timedelta(minutes=1)).isoformat(timespec="seconds"),
+            )
+            self.assertEqual(adapter["contract_version"], CONTEXT_BUNDLE_VERSION)
+            self.assertEqual(adapter["unverified_clues"], [])
+            self.assertEqual([item["source_ref"] for item in adapter["verified_contexts"]], ["source_61000002"])
+            self.assertEqual(len(adapter["verified_contexts"]), 1)
+            self.assertTrue(adapter["verified_contexts"][0]["context_ref"].startswith("context_"))
+            self.assertNotEqual(adapter["verified_contexts"][0]["context_ref"], accepted["verified_ref"])
 
-        payload = report_context(self.conn, self.now.date().isoformat())
-        self.assertEqual(payload["report_context_contract_version"], 2)
-        self.assertFalse(payload["raw_access"])
-        self.assertEqual(payload["context_bundle_v1"]["unverified_clues"], [])
-        encoded = json.dumps(payload["context_bundle_v1"], ensure_ascii=False)
-        for forbidden in ("candidate_ref", "observation_ref", "evidence_ref", "provenance_ref"):
-            self.assertNotIn(forbidden, encoded)
+            payload = report_context(self.conn, self.now.date().isoformat())
+            self.assertEqual(payload["report_context_contract_version"], 2)
+            self.assertFalse(payload["raw_access"])
+            self.assertEqual(payload["context_bundle_v1"]["unverified_clues"], [])
+            encoded = json.dumps(payload["context_bundle_v1"], ensure_ascii=False)
+            for forbidden in ("candidate_ref", "observation_ref", "evidence_ref", "provenance_ref"):
+                self.assertNotIn(forbidden, encoded)
 
 
     def test_scoped_idempotency_and_tombstone_block_new_key_revival(self) -> None:
@@ -4007,7 +4014,9 @@ class ContextConsoleTests(unittest.TestCase):
             )
             if version == 28:
                 conn.execute("DROP TRIGGER IF EXISTS pam_schema32_guard_update")
+                conn.execute("DROP TRIGGER IF EXISTS pam_schema33_guard_update")
                 conn.execute("DROP TRIGGER IF EXISTS pam_schema32_guard_insert")
+                conn.execute("DROP TRIGGER IF EXISTS pam_schema33_guard_insert")
                 conn.execute("DROP TRIGGER IF EXISTS pam_schema31_guard_update")
                 conn.execute("DROP TRIGGER IF EXISTS pam_schema31_guard_insert")
                 conn.execute("DROP TRIGGER IF EXISTS pam_schema30_guard_update")
@@ -4015,7 +4024,9 @@ class ContextConsoleTests(unittest.TestCase):
                 conn.execute("UPDATE meta SET value='28' WHERE key='schema_version'")
             else:
                 conn.execute("DROP TRIGGER IF EXISTS pam_schema32_guard_update")
+                conn.execute("DROP TRIGGER IF EXISTS pam_schema33_guard_update")
                 conn.execute("DROP TRIGGER IF EXISTS pam_schema32_guard_insert")
+                conn.execute("DROP TRIGGER IF EXISTS pam_schema33_guard_insert")
                 conn.execute("DROP TRIGGER IF EXISTS pam_schema31_guard_update")
                 conn.execute("DROP TRIGGER IF EXISTS pam_schema31_guard_insert")
                 conn.execute("UPDATE meta SET value='30' WHERE key='schema_version'")
@@ -4145,7 +4156,9 @@ class ContextConsoleTests(unittest.TestCase):
             # Reconstruct the pre-context source shape. The schema-29 case also
             # carries an opaque v0.4 marker that schema 31 must preserve without interpretation.
             original.execute("DROP TRIGGER pam_schema32_guard_insert")
+            original.execute("DROP TRIGGER pam_schema33_guard_insert")
             original.execute("DROP TRIGGER pam_schema32_guard_update")
+            original.execute("DROP TRIGGER pam_schema33_guard_update")
             original.execute("DROP TRIGGER pam_schema31_guard_insert")
             original.execute("DROP TRIGGER pam_schema31_guard_update")
             original.execute("DROP TRIGGER pam_schema30_guard_insert")
@@ -4396,7 +4409,9 @@ class ContextConsoleTests(unittest.TestCase):
         path = self.root / "stale-backup.sqlite"
         conn = ensure_ready(path)
         conn.execute("DROP TRIGGER pam_schema32_guard_insert")
+        conn.execute("DROP TRIGGER pam_schema33_guard_insert")
         conn.execute("DROP TRIGGER pam_schema32_guard_update")
+        conn.execute("DROP TRIGGER pam_schema33_guard_update")
         conn.execute("DROP TRIGGER pam_schema31_guard_insert")
         conn.execute("DROP TRIGGER pam_schema31_guard_update")
         conn.execute("DROP TRIGGER pam_schema30_guard_insert")
@@ -11908,7 +11923,9 @@ class ContextConsoleTests(unittest.TestCase):
         try:
             self._drop_context_objects(conn)
             conn.execute("DROP TRIGGER IF EXISTS pam_schema32_guard_insert")
+            conn.execute("DROP TRIGGER IF EXISTS pam_schema33_guard_insert")
             conn.execute("DROP TRIGGER IF EXISTS pam_schema32_guard_update")
+            conn.execute("DROP TRIGGER IF EXISTS pam_schema33_guard_update")
             conn.execute("DROP TRIGGER IF EXISTS pam_schema31_guard_insert")
             conn.execute("DROP TRIGGER IF EXISTS pam_schema31_guard_update")
             conn.execute("DROP TRIGGER IF EXISTS pam_schema30_guard_insert")
@@ -12058,7 +12075,9 @@ class ContextConsoleTests(unittest.TestCase):
             # schema-31 guard is intentionally removed only inside this test
             # fixture; the schema-30 guard remains active.
             conn.execute("DROP TRIGGER IF EXISTS pam_schema32_guard_insert")
+            conn.execute("DROP TRIGGER IF EXISTS pam_schema33_guard_insert")
             conn.execute("DROP TRIGGER IF EXISTS pam_schema32_guard_update")
+            conn.execute("DROP TRIGGER IF EXISTS pam_schema33_guard_update")
             conn.execute("DROP TRIGGER IF EXISTS pam_schema31_guard_insert")
             conn.execute("DROP TRIGGER IF EXISTS pam_schema31_guard_update")
             conn.execute("UPDATE meta SET value='30' WHERE key='schema_version'")
@@ -12773,7 +12792,9 @@ class ContextConsoleTests(unittest.TestCase):
         path = self.root / "schema30-null-confirmation.sqlite"
         conn = ensure_ready(path)
         conn.execute("DROP TRIGGER IF EXISTS pam_schema32_guard_insert")
+        conn.execute("DROP TRIGGER IF EXISTS pam_schema33_guard_insert")
         conn.execute("DROP TRIGGER IF EXISTS pam_schema32_guard_update")
+        conn.execute("DROP TRIGGER IF EXISTS pam_schema33_guard_update")
         conn.execute("DROP TRIGGER IF EXISTS pam_schema31_guard_insert")
         conn.execute("DROP TRIGGER IF EXISTS pam_schema31_guard_update")
         conn.execute("UPDATE meta SET value='30' WHERE key='schema_version'")
@@ -12922,7 +12943,9 @@ class ContextConsoleTests(unittest.TestCase):
                 if version in {30, 31}:
                     prepared = ensure_ready(path)
                     prepared.execute("DROP TRIGGER IF EXISTS pam_schema32_guard_insert")
+                    prepared.execute("DROP TRIGGER IF EXISTS pam_schema33_guard_insert")
                     prepared.execute("DROP TRIGGER IF EXISTS pam_schema32_guard_update")
+                    prepared.execute("DROP TRIGGER IF EXISTS pam_schema33_guard_update")
                     if version == 30:
                         prepared.execute("DROP TRIGGER IF EXISTS pam_schema31_guard_insert")
                         prepared.execute("DROP TRIGGER IF EXISTS pam_schema31_guard_update")
@@ -13532,6 +13555,23 @@ class ContextConsoleTests(unittest.TestCase):
                 "ha_auto_package_enabled": "false",
             },
         )
+
+    def test_owner_action_receipt_is_exact_private_read_only_and_does_not_replay(self) -> None:
+        payload = self._phase2_manual_action_payload(idempotency_key="idem_f20a0001")
+        raw = self._wire(payload)
+        before = self._table_counts()
+        self.assertEqual(owner_context_action(self.conn, raw, now=self.now, receipt_only=True)["status"], "not_confirmed")
+        self.assertEqual(before, self._table_counts())
+        saved = owner_context_action(self.conn, raw, now=self.now)
+        self.assertEqual(saved["status"], "recorded")
+        before = self._table_counts()
+        receipt = owner_context_action(self.conn, raw, now=self.now, receipt_only=True)
+        self.assertEqual(receipt["status"], "confirmed")
+        self.assertNotIn(payload["safe_label"], json.dumps(receipt))
+        self.assertEqual(before, self._table_counts())
+        changed = {**payload, "safe_label":"changed after request"}
+        self.assertEqual(owner_context_action(self.conn, self._wire(changed), now=self.now, receipt_only=True)["status"], "not_confirmed")
+        self.assertEqual(before, self._table_counts())
 
     def test_phase2_owner_actions_dual_write_atomically_and_negative_answers_never_verify(self) -> None:
         positive_payload = self._phase2_manual_action_payload(

@@ -6,7 +6,7 @@ _LOCK=None
 def observe(caller,task,state,**kwargs):
  if os.environ.get('JEV_DISABLE')=='1' or 'unittest' in sys.modules or 'pytest' in sys.modules:return False
  try:
-  name='_bigking_jev_client'
+  name='_psi_optional_ranking_client'
   module=sys.modules.get(name)
   if module is None:
    root=Path.home()/'Code/active/jev-judgment-service/jev'
@@ -17,7 +17,7 @@ def observe(caller,task,state,**kwargs):
 def observe_batch(caller,observations,**kwargs):
  if os.environ.get('JEV_DISABLE')=='1' or 'unittest' in sys.modules or 'pytest' in sys.modules:return False
  try:
-  name='_bigking_jev_client'
+  name='_psi_optional_ranking_client'
   module=sys.modules.get(name)
   if module is None:
    root=Path.home()/'Code/active/jev-judgment-service/jev'

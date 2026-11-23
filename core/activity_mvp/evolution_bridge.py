@@ -1,4 +1,4 @@
-"""Native AGI client and one idle-bounded, local-only evolution host.
+"""Native PSI client and one idle-bounded, local-only evolution host.
 
 No user profile/plugin import, automatic source observation, model or production
 worker. Starting this control host does not activate a recurring observation.
@@ -97,13 +97,13 @@ class AGIController(Controller):
                 task["source_status"] = "authorized" if valid else ("unknown" if refs is None else "invalidated")
                 if not valid:
                     task["phase"] = "source_unavailable" if refs is None else "evidence_invalidated"
-            value["product"] = "AGI"
+            value["product"] = "PSI"
             value["local_analysis_paused"] = bool(self.store.state_get("agi_local_paused", False))
             value["context"] = {"state": context_state, "authorized_references": len(refs or {}),
                 "consumer": "agi", "raw_access": False, "read_for_analysis": "explicit_action_only",
                 "helpfulness": "owner_feedback_only"}
             value["assets"] = [a if a["id"] != "pam" else {"id": "pam", "name": "工作上下文",
-                "status": context_state, "reason": "仅使用你单独共享给 AGI 的有效摘要。"} for a in value["assets"]]
+                "status": context_state, "reason": "仅使用你单独共享给 PSI 的有效摘要。"} for a in value["assets"]]
             value["boundaries"] = ["原摘要分析仍不调用模型；批评与改进使用独立授权与验收。", "摘要按接收方分别授权；任务只保存无正文引用。",
                 "共享摘要是有时间的用户说明，不是执行指令。", "回放通过不代表实际工作已改善。"]
             # Resume restores only local context analysis, never screen/recurring grants.

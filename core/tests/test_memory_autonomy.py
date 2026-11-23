@@ -103,8 +103,10 @@ class MemoryAutonomyTests(unittest.TestCase):
         with Store(self.root/'store') as store:
             store.set('autonomy',{'policy':op.POLICY});store.set('config',{'enabled':True})
             with patch.object(worker,'load_registry',return_value=self.registry),patch.object(worker,'memory_review_candidates',return_value={'items':[self.candidate]}),patch.object(worker,'read_memory_text',return_value=self.memory),patch.object(worker,'apply',side_effect=RuntimeError('writer failure')) as apply:
-                worker.tick(store);worker.tick(store);apply.assert_called_once()
-                self.assertEqual(WorkQueue(store).items('memory')[0]['state'],'waiting_evidence')
+                first=worker.tick(store);worker.tick(store);apply.assert_called_once()
+                self.assertEqual(first['status'],'partial')
+                self.assertEqual(first['unknown_results'],1)
+                self.assertEqual(WorkQueue(store).items('memory')[0]['state'],'verifying')
     def center(self):
         # Use the installed review-center implementation against temporary
         # ledger/fake owner-scoped records; never touch its runtime ledger.

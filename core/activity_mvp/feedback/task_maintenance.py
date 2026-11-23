@@ -2,6 +2,8 @@
 
 The scheduler retains its original owner, model and acceptance rules. The one
 owner-authorized 20261016 file recheck may amend only its COUNT=1 time binding.
+The separately source-bound 20261027 continuation is append-only and still
+requires the original owner to update the same native scheduler externally.
 Only two registered tasks can load versioned, evidence-bound progress here.
 All state is separate from activity, memory and the feedback databases.
 """
@@ -15,6 +17,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
+import shlex
 import sqlite3
 import stat
 import sys
@@ -26,6 +30,8 @@ from .store import atomic, digest, packed, private_directory
 
 POLICY = 'agi-task-maintenance-20261008-v1'
 SCHEDULE_PLAN = 'agi-core-value-20261016'
+CONTINUATION_PLAN = 'agi-natural-continuation-20261027'
+CONTINUATION_RRULE = 'FREQ=DAILY;BYHOUR=20;BYMINUTE=30;BYSECOND=0'
 SCHEDULE_ISSUE_KEY = 'agi-file-merge-natural-acceptance-20261006'
 TASKS = {'agi': '文件追踪修复复查', 'automation-9': '元认知上线验收与自然观察'}
 SOURCE_NAMES = {'agi': 'agi-file-merge-followup-20261006', 'automation-9': 'metacognition-20261005'}
@@ -257,7 +263,7 @@ def _schedule_commit(ledger, binding, intent, commit):
     return body
 
 
-def effective_scheduler(ledger, task, binding):
+def _original_effective_scheduler(ledger, task, binding):
     """Derive one exact exception, without rewriting the original authorization."""
     if task != 'agi': return binding['scheduler']
     intent_key, commit_key = _schedule_keys()
@@ -267,6 +273,19 @@ def effective_scheduler(ledger, task, binding):
     _schedule_case(binding, body['issue_id'], completed=True)
     if commit is None: return binding['scheduler']
     _schedule_commit(ledger, binding, intent, commit)
+    return body['new_scheduler']
+
+
+def effective_scheduler(ledger, task, binding):
+    previous = _original_effective_scheduler(ledger, task, binding)
+    if task != 'agi': return previous
+    intent_key, commit_key = _continuation_keys()
+    intent, commit = ledger.get(intent_key), ledger.get(commit_key)
+    if intent is None and commit is None: return previous
+    body = _continuation_intent(ledger, binding, intent)
+    _schedule_case(binding, body['issue_id'], completed=True)
+    if commit is None: return previous
+    _continuation_commit(ledger, body, intent, commit)
     return body['new_scheduler']
 
 
@@ -383,6 +402,621 @@ def commit_reschedule(store, task, payload):
             _append_schedule_record(ledger, commit_key, receipt)
         return {'committed': True, 'idempotent': False, 'receipt': receipt,
                 'scheduler_modified': False, 'native_trigger_verified': False}
+
+
+def _continuation_keys():
+    return ('schedule_intent:' + CONTINUATION_PLAN, 'schedule_commit:' + CONTINUATION_PLAN)
+
+
+def _continuation_source(identifier):
+    """Native hook metadata is a locator only, never proof of a human grant."""
+    from ..task_closure import Store as ClosureStore, digest as closure_digest
+    if not isinstance(identifier, str) or not re.fullmatch(r'[0-9a-f]{32}', identifier):
+        raise PermissionError('continuation_native_source_identity')
+    with ClosureStore(closure_database(), readonly=True) as closure:
+        if not closure.has_table('closure_request_sources'):
+            raise PermissionError('continuation_native_source_missing')
+        row = closure.conn.execute('SELECT * FROM closure_request_sources WHERE task_id=?',
+                                   (identifier,)).fetchone()
+        task = closure.conn.execute('SELECT platform,session,turn FROM closure_tasks WHERE id=?',
+                                    (identifier,)).fetchone()
+    native_id = r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}'
+    if (not row or not task or row['platform'] != 'codex'
+            or not isinstance(row['session'], str) or not isinstance(row['turn'], str)
+            or not re.fullmatch(native_id, row['session']) or not re.fullmatch(native_id, row['turn'])
+            or identifier != closure_digest([row['platform'], row['session'], row['turn']])[:32]
+            or any(task[key] != row[key] for key in ('platform', 'session', 'turn'))
+            or not isinstance(row['prompt_hash'], str) or not re.fullmatch(r'[0-9a-f]{64}', row['prompt_hash'])
+            or row['policy'] != 2 or type(row['at']) not in (int, float)
+            or not 0 < row['at'] <= time.time() + 30):
+        raise PermissionError('continuation_native_source_mismatch')
+    return {**{key: row[key] for key in ('task_id', 'platform', 'session', 'turn', 'prompt_hash', 'policy')},
+            'registered_at': row['at']}
+
+
+@contextlib.contextmanager
+def _continuation_native_file(session):
+    """Derive the single native path; callers cannot submit a transcript path."""
+    root = Path.home() / '.codex/sessions'
+    matches = list(root.glob('*/*/*/rollout-*-' + session + '.jsonl'))
+    if len(matches) != 1: raise PermissionError('continuation_native_file_ambiguous')
+    path = matches[0]
+    relative = path.relative_to(root)
+    if (len(relative.parts) != 4 or not re.fullmatch(r'\d{4}/\d{2}/\d{2}', '/'.join(relative.parts[:3]))
+            or not path.name.endswith('-' + session + '.jsonl')):
+        raise PermissionError('continuation_native_path_identity')
+    flags = getattr(os, 'O_SEARCH', 0x40000000 if sys.platform == 'darwin' else os.O_RDONLY) | os.O_DIRECTORY
+    directory = os.open('/', flags)
+    try:
+        for part in path.parts[1:-1]:
+            child = os.open(part, flags | os.O_NOFOLLOW, dir_fd=directory)
+            os.close(directory); directory = child
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+    finally: os.close(directory)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_nlink != 1 or info.st_mode & 0o022):
+            raise PermissionError('continuation_native_file_not_owned')
+        yield fd, info
+    finally: os.close(fd)
+
+
+def _continuation_record(raw):
+    if not raw.endswith(b'\n') or len(raw) > 512 * 1024:
+        raise PermissionError('continuation_native_record_invalid')
+    value = json.loads(raw, object_pairs_hook=_pairs)
+    if not isinstance(value, dict) or not isinstance(value.get('payload'), dict):
+        raise PermissionError('continuation_native_record_invalid')
+    return value
+
+
+def _continuation_request(text):
+    # Reuse automation_guard.instructions' data/quotation distinction. Only
+    # generic action semantics live here, never a production user's sentence.
+    if not isinstance(text, str) or not 0 < len(text) <= 4096 or text.lstrip().startswith(
+            ('<hook_prompt', '<codex_delegation', 'Stop hook feedback:', '# AGENTS.md', '<environment_context>')):
+        raise PermissionError('continuation_human_request_unverified')
+    clean = re.sub(r'```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)', ' ', text)
+    clean = re.sub(r'(?m)^\s*>.*$|`[^`\n]*`|“[^”]*”|‘[^’]*’|「[^」]*」|『[^』]*』|"[^"\n]*"', ' ', clean)
+    direct = re.search(r'^\s*(?:请|麻烦|现在|剩下的|接着)*\s*继续(?:跟进|处理|完成)', clean)
+    decision = r'(?:必须|需要).{0,8}(?:我|本人).{0,8}(?:决定|选择)'
+    quiet = (re.search(r'(?:只在|只有|仅在|仅有).{0,8}' + decision + r'.{0,12}(?:再找我|通知(?:我|本人))', clean)
+             or re.search(r'有.{0,4}' + decision + r'.{0,12}再找我', clean))
+    if (not direct or not all(word in clean for word in ('原任务', '文件追踪', '自然验收'))
+            or not re.search(r'做完|完成', clean)
+            or not quiet or re.search(r'测试|模拟|示例|假设|翻译|转述|是否|要不要|方案|分析|讨论|研究|解释|评估|考虑|探讨|[？?]', clean)
+            or re.search(r'(?:不要|不必|不用|无需|别|禁止|暂不|勿|不允许|停止|取消|暂停).{0,4}(?:执行|实施|修改|动手|操作|安装|发布|做)', clean)
+            or re.search(r'(?:不要|禁止|取消|暂停|停止|撤回).{0,12}(?:文件追踪|自然验收|原任务|跟进|自动)', clean)):
+        raise PermissionError('continuation_human_scope_unverified')
+
+
+def _continuation_user_pair(prior, record, source):
+    event, message = record['payload'], prior['payload']
+    item = event.get('item', {}); metadata = message.get('internal_chat_message_metadata_passthrough', {})
+    content, visible = item.get('content'), message.get('content')
+    if (record['type'] != 'event_msg' or event.get('type') != 'item_completed'
+            or event.get('thread_id') != source['session'] or event.get('turn_id') != source['turn']
+            or item.get('type') != 'UserMessage' or not isinstance(item.get('client_id'), str) or not item['client_id']
+            or not isinstance(item.get('id'), str) or not item['id']
+            or prior['type'] != 'response_item' or message.get('type') != 'message' or message.get('role') != 'user'
+            or metadata.get('turn_id') != source['turn'] or metadata.get('content_item_kinds') != ['user.text']
+            or metadata.get('content_item_metadata') != [{'provenance': {'type': 'user'}}]
+            or type(metadata.get('create_time')) not in (int, float)
+            or not 0 < metadata['create_time'] <= time.time() + 30
+            or not isinstance(content, list) or len(content) != 1 or not isinstance(content[0], dict)
+            or content[0].get('type') not in {'text', 'Text'}
+            or not isinstance(visible, list) or len(visible) != 1 or not isinstance(visible[0], dict)
+            or visible[0].get('type') != 'input_text' or not isinstance(content[0].get('text'), str)
+            or visible[0].get('text') != content[0]['text']
+            or hashlib.sha256(content[0]['text'].encode()).hexdigest() != source['prompt_hash']):
+        raise PermissionError('continuation_real_user_pair_required')
+    _continuation_request(content[0]['text'])
+    return metadata['create_time']
+
+
+def _continuation_root_record(record, source):
+    event = record['payload']; attribution = event.get('turn_attribution', {})
+    if (record['type'] != 'event_msg' or event.get('type') != 'task_started'
+            or event.get('turn_id') != source['turn'] or event.get('root_turn_id') != source['turn']
+            or attribution.get('turn_id') != source['turn'] or attribution.get('root_turn_id') != source['turn']
+            or attribution.get('parent_turn_id', True) is not None
+            or attribution.get('initiating_agent_path', True) is not None
+            or attribution.get('turn_trigger') != 'composer'):
+        raise PermissionError('continuation_primary_human_turn_required')
+
+
+def _continuation_route_record(record, source, owner):
+    event = record['payload']; item = event.get('item', {}); result = item.get('result', {})
+    if (record['type'] != 'event_msg' or event.get('type') != 'item_completed'
+            or event.get('thread_id') != source['session'] or event.get('turn_id') != source['turn']
+            or item.get('type') != 'McpToolCall'
+            or item.get('server') != 'codex_app' or item.get('tool') != 'send_message_to_thread'
+            or item.get('status') != 'completed' or not isinstance(item.get('arguments'), dict)
+            or item['arguments'].get('threadId') != owner or result.get('isError') is not False):
+        raise PermissionError('continuation_original_task_route_required')
+    content = result.get('content')
+    if not isinstance(content, list) or len(content) != 1 or content[0].get('type') != 'text':
+        raise PermissionError('continuation_original_task_route_required')
+    receipt = json.loads(content[0].get('text', ''), object_pairs_hook=_pairs)
+    if not isinstance(receipt, dict) or receipt != {'threadId': owner}:
+        raise PermissionError('continuation_original_task_route_required')
+
+
+def _native_volume_uuid(fd):
+    """Read a persistent volume identity from the already safe native fd only."""
+    import ctypes
+    import struct
+    if sys.platform != 'darwin': raise PermissionError('native_volume_uuid_unsupported')
+    class Attributes(ctypes.Structure):
+        _fields_ = [('bitmapcount', ctypes.c_ushort), ('reserved', ctypes.c_ushort),
+                    ('common', ctypes.c_uint32), ('volume', ctypes.c_uint32),
+                    ('directory', ctypes.c_uint32), ('file', ctypes.c_uint32), ('fork', ctypes.c_uint32)]
+    before = os.fstat(fd)
+    if not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or before.st_nlink != 1:
+        raise PermissionError('native_volume_file_not_owned')
+    function = ctypes.CDLL(None, use_errno=True).fgetattrlist
+    function.argtypes = [ctypes.c_int, ctypes.POINTER(Attributes), ctypes.c_void_p, ctypes.c_size_t, ctypes.c_ulong]
+    function.restype = ctypes.c_int
+    attributes = Attributes(5, 0, 0, 0x80000000 | 0x00040000, 0, 0, 0)
+    buffer = ctypes.create_string_buffer(20)
+    if function(fd, ctypes.byref(attributes), buffer, len(buffer), 0):
+        raise PermissionError('native_volume_uuid_unavailable')
+    raw = buffer.raw
+    if struct.unpack_from('=I', raw)[0] != 20 or raw[4:20] == bytes(16):
+        raise PermissionError('native_volume_uuid_invalid')
+    after = os.fstat(fd)
+    if any(getattr(before, key) != getattr(after, key) for key in ('st_dev', 'st_ino', 'st_mode', 'st_uid', 'st_nlink')):
+        raise PermissionError('native_volume_file_changed')
+    return str(uuid.UUID(bytes=raw[4:20]))
+
+
+def _continuation_native_proof(source, owner, issue, *, proof=None, fresh=False, identity='device'):
+    """Bounded native-pair proof; later reads verify only frozen exact records.
+
+    This uses the existing automation_guard.source_message/native closure format
+    principles inside this qualified controller; no external hook is executed.
+    No transcript text or whole-file hash is saved. Source IDs alone grant none.
+    """
+    with _continuation_native_file(source['session']) as (fd, info):
+        signature = [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns]
+        if identity not in {'device', 'volume', 'records_only', 'device_drift'}:
+            raise ValueError('continuation_native_identity_scheme')
+        if fresh and identity not in {'device', 'volume'}: raise ValueError('record_check_cannot_mint_proof')
+        volume = _native_volume_uuid(fd) if identity == 'volume' else None
+        if fresh:
+            head = os.pread(fd, min(info.st_size, 128 * 1024 + 1), 0).partition(b'\n')[0] + b'\n'
+            if len(head) > 128 * 1024: raise PermissionError('continuation_native_header_invalid')
+            start = max(0, info.st_size - 8 * 1024 * 1024)
+            data = os.pread(fd, info.st_size - start, start)
+            if not data.endswith(b'\n'): raise PermissionError('continuation_native_source_incomplete')
+            if start:
+                skipped, _, data = data.partition(b'\n'); start += len(skipped) + 1
+            lines = data.splitlines(keepends=True); positions = []; position = start
+            for line in lines: positions.append(position); position += len(line)
+            users, roots, routes, boundaries, later = [], [], [], [], False
+            for index, line in enumerate(lines):
+                if b'"UserMessage"' in line:
+                    record = _continuation_record(line); event = record['payload']; item = event.get('item', {})
+                    if record['type'] != 'event_msg' or item.get('type') != 'UserMessage': continue
+                    if event.get('turn_id') == source['turn']:
+                        if not index: raise PermissionError('continuation_real_user_pair_required')
+                        prior = _continuation_record(lines[index - 1]); _continuation_user_pair(prior, record, source)
+                        users.append(index)
+                    elif users:
+                        content = item.get('content') or []
+                        text = content[0].get('text', '') if len(content) == 1 else ''
+                        if not text.lstrip().startswith(('# AGENTS.md', '<environment_context>', '<hook_prompt', 'Stop hook feedback:')):
+                            later = True
+                elif any(kind in line for kind in (b'"task_started"', b'"task_complete"', b'"turn_aborted"')):
+                    record = _continuation_record(line)
+                    event = record['payload']
+                    if record['type'] != 'event_msg': continue
+                    if event.get('type') == 'task_started' and event.get('turn_id') == source['turn']:
+                        _continuation_root_record(record, source); roots.append(index)
+                    elif (event.get('type') == 'task_started'
+                          or event.get('type') in {'task_complete', 'turn_aborted'} and event.get('turn_id') == source['turn']):
+                        boundaries.append(index)
+                elif b'"McpToolCall"' in line and b'"send_message_to_thread"' in line:
+                    record = _continuation_record(line)
+                    try: _continuation_route_record(record, source, owner)
+                    except (PermissionError, ValueError, TypeError, KeyError): continue
+                    routes.append(index)
+            if len(users) != 1 or len(roots) != 1 or later or roots[0] >= users[0]:
+                raise PermissionError('continuation_native_source_missing_or_superseded')
+            selected = {'header': (0, head), 'root': (positions[roots[0]], lines[roots[0]]),
+                        'prior': (positions[users[0] - 1], lines[users[0] - 1]),
+                        'user': (positions[users[0]], lines[users[0]])}
+            end = next((index for index in boundaries if index > users[0]), len(lines))
+            if end < len(lines): selected['boundary'] = (positions[end], lines[end])
+            if source['session'] != owner:
+                routes = [index for index in routes if users[0] < index < end]
+                if not routes: raise PermissionError('continuation_original_task_route_required')
+                selected['route'] = (positions[routes[-1]], lines[routes[-1]])
+            created = _continuation_user_pair(_continuation_record(lines[users[0] - 1]),
+                                              _continuation_record(lines[users[0]]), source)
+            proof = {'session': source['session'], 'turn': source['turn'], 'owner': owner, 'issue_id': issue,
+                     'message_created_at': created,
+                     'scan_signature': signature, 'records': {name: {'offset': offset, 'length': len(raw),
+                     'sha256': hashlib.sha256(raw).hexdigest()} for name, (offset, raw) in selected.items()}}
+            if identity == 'volume': proof['volume_uuid'] = volume
+        keys = {'session', 'turn', 'owner', 'issue_id', 'message_created_at', 'scan_signature', 'records'}
+        if identity == 'volume': keys.add('volume_uuid')
+        if (not isinstance(proof, dict) or set(proof) != keys
+                or (proof['session'], proof['turn'], proof['owner'], proof['issue_id']) !=
+                (source['session'], source['turn'], owner, issue)
+                or not isinstance(proof['scan_signature'], list) or len(proof['scan_signature']) != 4
+                or (identity == 'device' and proof['scan_signature'][:2] != signature[:2])
+                or (identity == 'device_drift' and (proof['scan_signature'][0] == info.st_dev
+                    or proof['scan_signature'][1] != info.st_ino))
+                or (identity == 'volume' and (proof['scan_signature'][1] != info.st_ino
+                    or not isinstance(proof['volume_uuid'], str)
+                    or not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', proof['volume_uuid'])
+                    or proof['volume_uuid'] != volume))
+                or set(proof['records']) - {'boundary'} !=
+                ({'header', 'root', 'prior', 'user'} | ({'route'} if source['session'] != owner else set()))):
+            raise PermissionError('continuation_frozen_native_proof_invalid')
+        records = {}
+        for name, slot in proof['records'].items():
+            if (not isinstance(slot, dict) or set(slot) != {'offset', 'length', 'sha256'}
+                    or type(slot['offset']) is not int or type(slot['length']) is not int
+                    or slot['offset'] < 0 or not 0 < slot['length'] <= 512 * 1024
+                    or slot['offset'] + slot['length'] > info.st_size):
+                raise PermissionError('continuation_frozen_native_proof_invalid')
+            raw = os.pread(fd, slot['length'], slot['offset'])
+            if hashlib.sha256(raw).hexdigest() != slot['sha256']:
+                raise PermissionError('continuation_frozen_native_record_changed')
+            records[name] = _continuation_record(raw)
+        header = records['header']
+        if (proof['records']['header']['offset'] != 0 or header['type'] != 'session_meta'
+                or header['payload'].get('id') != source['session']
+                or header['payload'].get('source') not in {'vscode', 'cli'}):
+            raise PermissionError('continuation_native_header_invalid')
+        slots = proof['records']
+        if (slots['prior']['offset'] + slots['prior']['length'] != slots['user']['offset']
+                or slots['root']['offset'] >= slots['prior']['offset']):
+            raise PermissionError('continuation_frozen_native_proof_invalid')
+        _continuation_root_record(records['root'], source)
+        if _continuation_user_pair(records['prior'], records['user'], source) != proof['message_created_at']:
+            raise PermissionError('continuation_frozen_native_proof_invalid')
+        if 'route' in records:
+            if slots['route']['offset'] <= slots['user']['offset']: raise PermissionError('continuation_frozen_native_proof_invalid')
+            _continuation_route_record(records['route'], source, owner)
+        if 'boundary' in records:
+            boundary = records['boundary']; event = boundary['payload']
+            if (boundary['type'] != 'event_msg' or slots['boundary']['offset'] <= slots['user']['offset']
+                    or 'route' in slots and slots['route']['offset'] >= slots['boundary']['offset']
+                    or not (event.get('type') == 'task_started' and event.get('turn_id') != source['turn']
+                            or event.get('type') in {'task_complete', 'turn_aborted'} and event.get('turn_id') == source['turn'])):
+                raise PermissionError('continuation_native_turn_boundary_invalid')
+        after = os.fstat(fd)
+        if fresh and signature != [after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns]:
+            raise PermissionError('continuation_native_source_changed')
+        if identity == 'volume' and _native_volume_uuid(fd) != volume:
+            raise PermissionError('continuation_native_volume_changed')
+    return proof
+
+
+def _continuation_source_is_current(source):
+    from ..task_closure import Store as ClosureStore
+    with ClosureStore(closure_database(), readonly=True) as closure:
+        if not closure.has_table('closure_hook_roots'):
+            raise PermissionError('continuation_current_native_source_missing')
+        row = closure.conn.execute("SELECT * FROM closure_hook_roots WHERE platform='codex' AND session=?",
+                                   (source['session'],)).fetchone()
+    if not row or any(row[key] != source[key] for key in ('task_id', 'platform', 'session', 'turn', 'prompt_hash')):
+        raise PermissionError('continuation_native_source_superseded')
+
+
+def _continuation_snapshot_unchanged(source, proof):
+    _continuation_source_is_current(source)
+    with _continuation_native_file(source['session']) as (_, info):
+        if proof['scan_signature'] != [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns]:
+            raise PermissionError('continuation_native_source_changed')
+
+
+def _continuation_prompt():
+    core = Path.home() / 'Library/Application Support/PSI/core'
+    bootstrap = ('import os,sys,runpy;os.umask(0o077);sys.dont_write_bytecode=True;sys.path.insert(0,'
+                 + repr(str(core)) + ');sys.argv=["task-maintenance",*sys.argv[1:]];'
+                 'runpy.run_module("activity_mvp.feedback.task_maintenance",run_name="__main__",alter_sys=True)')
+    entry = '/Library/Frameworks/Python.framework/Versions/3.12/bin/python3 -I -S -c ' + shlex.quote(bootstrap)
+    return f"""在本聊天继续原PSI文件追踪方案B的自然验收，不创建重复任务。先执行正式安装版固定读取入口：
+{entry} read --task agi
+核native_use_recorded=true，保存实际version、完整说明及current_sources指纹；spec.sources只作历史。按当前说明和主聊天受控修复回执只读核最新配套、主/文件心跳、八启用根完整基线及实际版本推进；保留停用历史及三项文档排除，不重复迁移。分别统计北京时间日系统控制重置与溢出，区分消费异常、重启、重建、锁屏/等待解锁、进程代际与有来源的有效观察；缺失保持未知。每日重置≤1、无新溢出且充分有效观察和实际处理只称初步见效；任一天≥3或新溢出称未见效；每日2或观察不足待验。系统明确丢事件仍重建。pending=0、旧累计、安装及迁移不代自然验收。
+复用原932自然事项及agi，每日一次必要有界核查。本轮统一发布归主聊天；未来发现可修故障先核当前并行负责人和实际安装版本，不与同一正在执行的修复竞争。没有正在执行的同一修复时，由原agi任务在既有权限、固定控制器、串行维护、独立审查及配套发布条件内继续必要修复与验收，不只写“沿主聊天”后无限等待，不要求本人盯进度或另开聊天。superseded_file_events_merged合并待确认记录按原收紧B保留，不误当新故障或自然帮助。保留原权限、范围、固定控制器、预算、模型、暂停取消和人工选择，不清锁/历史、回灌旧库、重放未知、外发或长期记忆。自然观察不新增备份；必要修复发布的恢复件仅按当时原发布条件在已核验T9直接最小生成，不本机暂存或重复。原子写本轮真实UTC进度JSON，三阶段真实布尔与全部未完/负责人/恢复条件；沿已有独立archive_source，不重复归档。使用实际加载版本，经相同固定入口record-run严格四参数并读回recorded=true；未知提交不重试。结束前retirement-check，仅eligible=true且全部原验收/闭环当前满足，由原owner正式删除同一agi、核接口/原生读回并record-retirement，保留历史。日期或低计数不冒称完成。普通等待、恢复、无变化保持安静；只有必须本人决定时请求行动，不要求本人盯进度。"""
+
+
+def _continuation_previous(ledger, binding):
+    previous = _original_effective_scheduler(ledger, 'agi', binding)
+    old_commit = ledger.get(_schedule_keys()[1])
+    if old_commit is None:
+        raise PermissionError('original_committed_recheck_required')
+    return previous, digest(old_commit)
+
+
+def _continuation_scheduler(previous):
+    if ('notification_policy' in previous and 'notificationPolicy' in previous
+            and previous['notification_policy'] != previous['notificationPolicy']):
+        raise PermissionError('continuation_notification_alias_conflict')
+    value = {key: item for key, item in previous.items()
+             if key not in {'notification_policy', 'notificationPolicy'}}
+    return {**value, 'rrule': CONTINUATION_RRULE, 'prompt_sha256': digest(_continuation_prompt()),
+            'notification_policy': 'failed_runs_only'}
+
+
+def _continuation_intent_metadata(ledger, binding, intent):
+    if not isinstance(intent, dict) or set(intent) != {'id', 'body'}:
+        raise ValueError('continuation_intent_invalid')
+    body = intent['body']
+    keys = {'plan', 'task', 'owner', 'issue_id', 'prepared_at', 'used_version', 'read_use_id',
+            'read_spec_sha256', 'read_sources_sha256', 'authorization_sha256', 'binding_sha256',
+            'previous_commit_sha256', 'native_source', 'native_proof', 'old_scheduler', 'new_scheduler'}
+    if (not isinstance(body, dict) or set(body) != keys or intent['id'] != digest(body)
+            or body['plan'] != CONTINUATION_PLAN or body['task'] != 'agi'
+            or body['owner'] != binding['owner_session'] or body['binding_sha256'] != digest(binding)
+            or type(body['used_version']) is not int or type(body['prepared_at']) not in (int, float)
+            or not 0 < body['prepared_at'] <= time.time() + 30):
+        raise ValueError('continuation_intent_binding_invalid')
+    authorization, sha = read_json(ledger.root / 'authorization.json')
+    if (sha != body['authorization_sha256'] or authorization.get('policy') != POLICY
+            or authorization.get('tasks', {}).get('agi') != binding):
+        raise PermissionError('schedule_original_authorization_changed')
+    previous, previous_commit = _continuation_previous(ledger, binding)
+    if (body['old_scheduler'] != previous or body['previous_commit_sha256'] != previous_commit
+            or previous.get('kind') != 'heartbeat' or previous.get('status') != 'ACTIVE'
+            or previous.get('target_thread_id') != body['owner']
+            or body['new_scheduler'] != _continuation_scheduler(previous)):
+        raise PermissionError('continuation_exact_scheduler_required')
+    if (not isinstance(body['native_source'], dict)
+            or body['native_source'] != _continuation_source(body['native_source'].get('task_id'))):
+        raise PermissionError('continuation_native_source_changed')
+    _schedule_read(ledger, body, current_version=False)
+    return body
+
+
+def _continuation_intent(ledger, binding, intent):
+    body = _continuation_intent_metadata(ledger, binding, intent)
+    renewal = ledger.get(_source_renewal_key())
+    if renewal is not None:
+        _source_renewal_record(ledger, binding, intent, renewal)
+        # Original records remain historical facts, not a renewed physical proof.
+        proof = _continuation_native_proof(body['native_source'], body['owner'], body['issue_id'],
+                                           proof=body['native_proof'], identity='records_only')
+    else:
+        proof = _continuation_native_proof(body['native_source'], body['owner'], body['issue_id'], proof=body['native_proof'])
+    if (proof['message_created_at'] < dt.datetime(2026, 10, 27, tzinfo=ZONE).timestamp()
+            or proof['message_created_at'] <= ledger.get(_schedule_keys()[1])['committed_at']):
+        raise PermissionError('continuation_current_human_request_required')
+    return body
+
+
+def _source_renewal_key():
+    return 'native_source_renewal:' + CONTINUATION_PLAN
+
+
+def _source_renewal_record(ledger, binding, intent, record):
+    original = _continuation_intent_metadata(ledger, binding, intent)
+    commit = ledger.get(_continuation_keys()[1])
+    _continuation_commit(ledger, original, intent, commit)
+    keys = {'intent_id', 'commit_sha256', 'authorization_sha256', 'binding_sha256', 'scheduler_sha256',
+            'created_at', 'native_source', 'native_proof'}
+    if not isinstance(record, dict) or set(record) != {'id', 'body'}:
+        raise ValueError('native_source_renewal_record_invalid')
+    body = record['body']
+    if (not isinstance(body, dict) or set(body) != keys or record['id'] != digest(body)
+            or body['intent_id'] != intent['id'] or body['commit_sha256'] != digest(commit)
+            or body['authorization_sha256'] != original['authorization_sha256']
+            or body['binding_sha256'] != digest(binding)
+            or body['scheduler_sha256'] != digest(original['new_scheduler'])
+            or type(body['created_at']) not in (int, float)
+            or not commit['committed_at'] <= body['created_at'] <= time.time() + 30
+            or not isinstance(body['native_source'], dict)
+            or body['native_source'] != _continuation_source(body['native_source'].get('task_id'))
+            or body['native_source'] == original['native_source']):
+        raise PermissionError('native_source_renewal_binding_invalid')
+    proof = _continuation_native_proof(body['native_source'], original['owner'], original['issue_id'],
+                                       proof=body['native_proof'], identity='volume')
+    if not commit['committed_at'] < proof['message_created_at'] <= body['created_at'] + 30:
+        raise PermissionError('native_source_renewal_new_person_required')
+    return body
+
+
+def _renew_native_source_locked(store, ledger, task, conf, payload):
+    """One explicit read --input renewal; never changes the original grant.
+
+    Device drift is diagnosed, not grandfathered. A new current primary human
+    request is independently proven before one append. Another chat must have
+    the same successful native route the original protocol requires. Normal
+    reads cannot create this record, and no old UUID is inferred.
+    """
+    if task != 'agi' or set(payload) != {'renew_native_source', 'intent_id', 'scheduler_sha256', 'source_task_id'} or payload['renew_native_source'] is not True:
+        raise ValueError('native_source_renewal_fields')
+    root, current_conf, context, authorization_sha = _schedule_owner(store, task)
+    if root != ledger.root or current_conf != conf: raise PermissionError('schedule_authority_changed_before_append')
+    binding = conf['tasks'][task]
+    intent = ledger.get(_continuation_keys()[0])
+    original = _continuation_intent_metadata(ledger, binding, intent)
+    commit = ledger.get(_continuation_keys()[1]); _continuation_commit(ledger, original, intent, commit)
+    if payload['intent_id'] != intent['id'] or payload['scheduler_sha256'] != digest(original['new_scheduler']):
+        raise PermissionError('native_source_renewal_exact_intent_required')
+    if scheduler_metadata(task) != original['new_scheduler']: raise PermissionError('native_schedule_readback_mismatch')
+    _schedule_case(binding, original['issue_id'], completed=True)
+    saved = ledger.get(_source_renewal_key())
+    if saved is not None:
+        saved_body = _source_renewal_record(ledger, binding, intent, saved)
+        if payload['source_task_id'] != saved_body['native_source']['task_id']:
+            raise PermissionError('native_source_renewal_already_recorded')
+        return {'recorded': True, 'idempotent': True, 'receipt': saved, 'original_proof_renewed': False, 'scheduler_modified': False}
+    # No alternate recovery for changed inode, changed bytes or other failures.
+    _continuation_native_proof(original['native_source'], original['owner'], original['issue_id'],
+                               proof=original['native_proof'], identity='device_drift')
+    source = _continuation_source(payload['source_task_id'])
+    if source['session'] == context['session'] and (source['turn'] != context['turn']
+            or source['task_id'] != context.get('hook_task_id')):
+        raise PermissionError('native_source_renewal_current_person_required')
+    _continuation_source_is_current(source)
+    proof = _continuation_native_proof(source, original['owner'], original['issue_id'], fresh=True, identity='volume')
+    body = {'intent_id': intent['id'], 'commit_sha256': digest(commit), 'authorization_sha256': authorization_sha,
+            'binding_sha256': digest(binding), 'scheduler_sha256': payload['scheduler_sha256'],
+            'created_at': time.time(), 'native_source': source, 'native_proof': proof}
+    record = {'id': digest(body), 'body': body}
+    _source_renewal_record(ledger, binding, intent, record)
+    confirmed = native_context(task, conf)  # IPC stays outside the writer tx.
+    if any(confirmed.get(key) != context.get(key) for key in ('session', 'turn', 'hook_task_id')):
+        raise PermissionError('current_native_turn_changed')
+    with _schedule_control(store), ledger.tx():
+        if ledger.get(_continuation_keys()[0]) != intent or ledger.get(_continuation_keys()[1]) != commit:
+            raise PermissionError('native_source_renewal_original_chain_changed')
+        _continuation_native_proof(original['native_source'], original['owner'], original['issue_id'],
+                                   proof=original['native_proof'], identity='device_drift')
+        _source_renewal_record(ledger, binding, intent, record)
+        # Finish record/UUID I/O before the final live-authority and source
+        # checks. No second proof read may open another window after this.
+        _schedule_authority_current(store, root, digest(conf), authorization_sha)
+        if ledger.get('enabled') is not True: raise PermissionError('maintenance_paused')
+        if scheduler_metadata(task) != original['new_scheduler']: raise PermissionError('scheduler_changed_before_append')
+        _schedule_case(binding, original['issue_id'], completed=True)
+        _continuation_snapshot_unchanged(source, proof)
+        _append_schedule_record(ledger, _source_renewal_key(), record)
+    return {'recorded': True, 'idempotent': False, 'receipt': record, 'original_proof_renewed': False, 'scheduler_modified': False}
+
+
+def _continuation_loaded_read(ledger, context, *, unrecorded=False):
+    key = digest(['agi', context['session'], context['turn']])
+    row = ledger.db.execute('SELECT * FROM uses WHERE id=?', (key,)).fetchone()
+    loaded = ledger.db.execute('SELECT * FROM use_sources WHERE id=?', (key,)).fetchone()
+    if not row or not loaded:
+        raise ValueError('actual_schedule_read_required')
+    if unrecorded and row['result'] is not None:
+        raise ValueError('continuation_run_already_recorded')
+    proof = {'used_version': row['version'], 'read_use_id': key, 'read_spec_sha256': row['spec_sha256'],
+             'read_sources_sha256': digest(json.loads(loaded['sources']))}
+    _schedule_read(ledger, {**proof, 'owner': context['session']})
+    return proof, json.loads(loaded['spec'])
+
+
+def _continuation_commit(ledger, body, intent, commit):
+    keys = {'intent_id', 'committed_at', 'committed_by', 'scheduler_sha256', 'read'}
+    if (not isinstance(commit, dict) or set(commit) != keys or commit['intent_id'] != intent['id']
+            or commit['scheduler_sha256'] != digest(body['new_scheduler'])
+            or type(commit['committed_at']) not in (int, float)
+            or not body['prepared_at'] <= commit['committed_at'] <= time.time() + 30
+            or not isinstance(commit['committed_by'], dict) or set(commit['committed_by']) != {'session', 'turn'}
+            or commit['committed_by']['session'] != body['owner'] or not commit['committed_by']['turn']
+            or not isinstance(commit['read'], dict) or set(commit['read']) !=
+            {'used_version', 'read_use_id', 'read_spec_sha256', 'read_sources_sha256'}
+            or commit['read']['read_use_id'] != digest(['agi', body['owner'], commit['committed_by']['turn']])):
+        raise ValueError('continuation_commit_invalid')
+    _schedule_read(ledger, {**body, **commit['read']}, current_version=False)
+
+
+def _continuation_pending(ledger, task, binding):
+    if task != 'agi': return None
+    intent_key, commit_key = _continuation_keys()
+    intent, commit = ledger.get(intent_key), ledger.get(commit_key)
+    if intent is None or commit is not None: return None
+    body = _continuation_intent(ledger, binding, intent)
+    _schedule_case(binding, body['issue_id'], completed=True)
+    return body
+
+
+def _continuation_result(intent, *, state, idempotent, receipt=None):
+    body = intent['body']
+    value = {'intent_id': intent['id'], 'plan': CONTINUATION_PLAN, 'state': state,
+             'idempotent': idempotent, 'rrule': body['new_scheduler']['rrule'],
+             'notificationPolicy': body['new_scheduler']['notification_policy'],
+             'prompt': _continuation_prompt(), 'expected_scheduler': body['new_scheduler'],
+             'scheduler_modified': False, 'native_trigger_verified': False}
+    if receipt is not None:
+        value.update(committed=True, receipt=receipt, native_readback_verified=True,
+                     next_version_read_requires_new_native_turn=True)
+    elif idempotent:
+        value['reconcile_original_native_update_only'] = True
+    else:
+        value['native_update_required'] = True
+    return value
+
+
+def prepare_continuation(store, task, payload):
+    root, conf, context, authorization_sha = _schedule_owner(store, task)
+    binding, conf_sha = conf['tasks'][task], digest(conf)
+    if set(payload) != {'used_version', 'issue_id', 'source_task_id'} or type(payload['used_version']) is not int:
+        raise ValueError('continuation_prepare_fields')
+    with Ledger(root) as ledger, task_lock(ledger, task):
+        if ledger.get('enabled') is not True: raise PermissionError('maintenance_paused')
+        intent_key, commit_key = _continuation_keys()
+        existing, committed = ledger.get(intent_key), ledger.get(commit_key)
+        read, spec = _continuation_loaded_read(ledger, context, unrecorded=existing is None)
+        if read['used_version'] != payload['used_version']: raise ValueError('actual_loaded_version_required')
+        if existing is not None:
+            body = _continuation_intent(ledger, binding, existing)
+            _schedule_case(binding, body['issue_id'], completed=True)
+            if (payload['issue_id'] != body['issue_id']
+                    or payload['source_task_id'] != body['native_source']['task_id']):
+                raise PermissionError('continuation_already_prepared')
+            if committed is not None: _continuation_commit(ledger, body, existing, committed)
+            allowed = [body['new_scheduler']] if committed else [body['old_scheduler'], body['new_scheduler']]
+            if scheduler_metadata(task) not in allowed: raise PermissionError('native_schedule_readback_mismatch')
+            return _continuation_result(existing, state='committed' if committed else 'prepared',
+                                        idempotent=True, receipt=committed)
+        if committed is not None: raise ValueError('continuation_intent_missing')
+        _schedule_case(binding, payload['issue_id'])
+        if spec['stages']['natural_effect'] is not False: raise PermissionError('natural_effect_already_accepted')
+        previous, previous_commit = _continuation_previous(ledger, binding)
+        native_source = _continuation_source(payload['source_task_id'])
+        _continuation_source_is_current(native_source)
+        native_proof = _continuation_native_proof(native_source, context['session'], payload['issue_id'], fresh=True)
+        body = {'plan': CONTINUATION_PLAN, 'task': task, 'owner': context['session'],
+                'issue_id': payload['issue_id'], 'prepared_at': time.time(), **read,
+                'authorization_sha256': authorization_sha, 'binding_sha256': digest(binding),
+                'previous_commit_sha256': previous_commit, 'native_source': native_source, 'native_proof': native_proof,
+                'old_scheduler': previous, 'new_scheduler': _continuation_scheduler(previous)}
+        intent = {'id': digest(body), 'body': body}
+        _continuation_intent(ledger, binding, intent)
+        if scheduler_metadata(task) != previous: raise PermissionError('original_scheduler_definition_changed')
+        with _schedule_control(store), ledger.tx():
+            if ledger.get('enabled') is not True: raise PermissionError('maintenance_paused')
+            _schedule_authority_current(store, root, conf_sha, authorization_sha)
+            _schedule_case(binding, payload['issue_id']); _continuation_intent(ledger, binding, intent)
+            if _continuation_loaded_read(ledger, context, unrecorded=True)[0] != read: raise ValueError('continuation_read_changed')
+            if scheduler_metadata(task) != previous: raise PermissionError('scheduler_changed_before_prepare')
+            _schedule_authority_current(store, root, conf_sha, authorization_sha)
+            _continuation_snapshot_unchanged(native_source, native_proof)
+            _append_schedule_record(ledger, intent_key, intent)
+        return _continuation_result(intent, state='prepared', idempotent=False)
+
+
+def commit_continuation(store, task, payload):
+    root, conf, context, authorization_sha = _schedule_owner(store, task)
+    binding, conf_sha = conf['tasks'][task], digest(conf)
+    if set(payload) != {'intent_id'}: raise ValueError('continuation_commit_fields')
+    with Ledger(root) as ledger, task_lock(ledger, task):
+        if ledger.get('enabled') is not True: raise PermissionError('maintenance_paused')
+        intent_key, commit_key = _continuation_keys()
+        intent, saved = ledger.get(intent_key), ledger.get(commit_key)
+        body = _continuation_intent(ledger, binding, intent)
+        if payload['intent_id'] != intent['id']: raise ValueError('continuation_intent_id_mismatch')
+        _schedule_case(binding, body['issue_id'], completed=saved is not None)
+        if scheduler_metadata(task) != body['new_scheduler']: raise PermissionError('native_schedule_readback_mismatch')
+        if saved is not None:
+            _continuation_commit(ledger, body, intent, saved)
+            return _continuation_result(intent, state='committed', idempotent=True, receipt=saved)
+        read, _ = _continuation_loaded_read(ledger, context, unrecorded=True)
+        with _schedule_control(store), ledger.tx():
+            if ledger.get('enabled') is not True: raise PermissionError('maintenance_paused')
+            _schedule_authority_current(store, root, conf_sha, authorization_sha)
+            if ledger.get(intent_key) != intent: raise ValueError('continuation_intent_changed_before_commit')
+            _schedule_case(binding, body['issue_id']); _continuation_intent(ledger, binding, intent)
+            if _continuation_loaded_read(ledger, context, unrecorded=True)[0] != read: raise ValueError('continuation_read_changed')
+            if scheduler_metadata(task) != body['new_scheduler']: raise PermissionError('scheduler_changed_before_commit')
+            _schedule_authority_current(store, root, conf_sha, authorization_sha)
+            receipt = {'intent_id': intent['id'], 'committed_at': time.time(),
+                       'committed_by': {key: context[key] for key in ('session', 'turn')},
+                       'scheduler_sha256': digest(body['new_scheduler']), 'read': read}
+            _continuation_commit(ledger, body, intent, receipt)
+            _append_schedule_record(ledger, commit_key, receipt)
+        return _continuation_result(intent, state='committed', idempotent=False, receipt=receipt)
 
 
 def closure_database():
@@ -510,8 +1144,12 @@ def refresh(ledger, task, binding):
     with task_lock(ledger, task): return _refresh(ledger, task, binding)
 
 
-def _refresh(ledger, task, binding):
-    if scheduler_metadata(task) != effective_scheduler(ledger, task, binding): raise PermissionError('original_scheduler_definition_changed')
+def _refresh(ledger, task, binding, *, allow_pending_read=False):
+    expected, actual = effective_scheduler(ledger, task, binding), scheduler_metadata(task)
+    if actual != expected:
+        pending = _continuation_pending(ledger, task, binding) if allow_pending_read else None
+        if not pending or actual != pending['new_scheduler']:
+            raise PermissionError('original_scheduler_definition_changed')
     latest = ledger.get('latest_source:' + task, {})
     source = latest.get('source', binding['source']); archive_path = latest.get('archive_source', binding['archive_source'])
     receipt, ref = checked_source(task, source)
@@ -521,13 +1159,22 @@ def _refresh(ledger, task, binding):
     row = ledger.db.execute('SELECT * FROM tasks WHERE id=?', (task,)).fetchone()
     old = json.loads(row['spec']) if row else None
     detail = receipt.get('remaining', []) if task == 'automation-9' else []
-    semantic = digest([stages, detail])
+    continuation = None
+    if task == 'agi' and ledger.get(_continuation_keys()[1]) is not None:
+        continuation = {'plan': CONTINUATION_PLAN, 'intent_id': ledger.get(_continuation_keys()[0])['id'],
+                        'scheduler_sha256': digest(expected)}
+        renewal = ledger.get(_source_renewal_key())
+        if renewal is not None: continuation['native_source_renewal_id'] = renewal['id']
+    semantic = digest([stages, detail, continuation]) if continuation else digest([stages, detail])
     changed = old is None or old['semantic'] != semantic
     version = (row['version'] + 1 if changed else row['version']) if row else 1
     spec = {'policy': POLICY, 'task': task, 'name': TASKS[task], 'version': version, 'semantic': semantic,
             'owner_session': binding['owner_session'], 'stages': stages, 'sources': refs, 'next_steps': steps(task, stages),
             'observed_at': receipt.get('at', receipt.get('observed_at')), 'updated_at': time.time(),
             'boundary': '原目标、时间、模型、隐私、预算、验收标准、暂停取消和人工选择保持。'}
+    if continuation:
+        spec['schedule_continuation'] = continuation
+        spec['boundary'] = '仅PSI原任务观察时间沿本次原生授权的精确续接；原目标、模型、隐私、预算、验收标准、暂停取消和人工选择保持。'
     if not changed: spec = old
     # Recheck all objects immediately before committing; no partial new version.
     for item in refs:
@@ -563,7 +1210,7 @@ def _refresh(ledger, task, binding):
 
 
 def collect_repairs(store, ledger):
-    """Observe only post-authorization AGI job transitions; never export model prose."""
+    """Observe only post-authorization PSI job transitions; never export model prose."""
     since = ledger.get('repair_observe_since', time.time())
     states = {'building', 'prepared', 'blocked', 'deploying', 'observing', 'unknown', 'failed', 'rolled_back', 'verified', 'decision'}
     from .evolution_notices import FILE_TAGS
@@ -593,13 +1240,16 @@ def native_context(task, conf):
     from .projects import PROJECTS
     with ClosureStore(closure_database(), readonly=True) as closure:
         context = closure.recovery_caller()
-    if not context or context.get('platform') != 'codex' or context['session'] != conf['tasks'][task]['owner_session']:
+    if (task not in TASKS or not context or context.get('platform') != 'codex'
+            or context['session'] != conf['tasks'][task]['owner_session']):
         raise PermissionError('original_native_owner_required')
     # Heartbeats do not refresh UserPromptSubmit's root. Keep that receipt as
     # owner provenance, but obtain the executing turn from the live desktop.
     try:
-        with DesktopIPC() as ipc:
-            snapshot = ipc.snapshot(context['session'], expected_cwd=PROJECTS['agi']['repository'], current_turn=True)
+        from ..native_metadata import MetadataBudget
+        with DesktopIPC(metadata_budget=MetadataBudget()) as ipc:
+            snapshot = ipc.snapshot(context['session'], expected_cwd=PROJECTS['agi']['repository'],
+                                    current_turn=True, allow_registered_worktree=True)
         turn = thread_id(snapshot.get('turn_id'))
     except (NativeError, OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
         raise PermissionError('current_native_turn_unavailable') from exc
@@ -613,17 +1263,35 @@ def native_context(task, conf):
             'turn_source': 'desktop_owner'}
 
 
-def load_task(store, task, root=None):
+def load_task(store, task, root=None, *, source_renewal=None):
     actual, conf = authorized(store)
     if root is not None and Path(root) != actual: raise PermissionError('maintenance_root_mismatch')
     if task not in conf['tasks']: raise PermissionError('task_not_authorized')
     with Ledger(actual) as ledger:
         if ledger.get('enabled') is not True: raise PermissionError('maintenance_paused')
-        with task_lock(ledger, task): return _load_task_locked(ledger, task, conf)
+        with task_lock(ledger, task):
+            if source_renewal is None: return _load_task_locked(ledger, task, conf)
+            renewal = _renew_native_source_locked(store, ledger, task, conf, source_renewal)
+            try:
+                result = _load_task_locked(ledger, task, conf)
+            except (PermissionError, ValueError, OSError, sqlite3.Error) as exc:
+                # The append may have committed. Preserve its exact receipt;
+                # do not conceal it in a generic rejection or append again.
+                return {'status': 'blocked', 'source_renewal': renewal, 'native_use_recorded': False,
+                        'read_error': str(exc) if isinstance(exc, (PermissionError, ValueError)) else type(exc).__name__}
+            return {**result, 'source_renewal': renewal}
 
 
 def _load_task_locked(ledger, task, conf):
-        _refresh(ledger, task, conf['tasks'][task])
+        # Only the original operator read may reconcile one authenticated native
+        # update before commit. Ordinary refresh/record/retirement stay closed.
+        context = None
+        pending = _continuation_pending(ledger, task, conf['tasks'][task])
+        if pending:
+            context = native_context(task, conf)
+            if context.get('platform') != 'codex' or context.get('session') != conf['tasks'][task]['owner_session']:
+                raise PermissionError('original_native_owner_required')
+        _refresh(ledger, task, conf['tasks'][task], allow_pending_read=pending is not None)
         row = ledger.db.execute('SELECT spec FROM tasks WHERE id=?', (task,)).fetchone()
         spec = json.loads(row[0]); refs = ledger.get('validated_sources:' + task)['sources']
         result = {'spec': spec, 'current_sources': refs, 'native_use_recorded': False,
@@ -632,9 +1300,21 @@ def _load_task_locked(ledger, task, conf):
             result['current_schedule'] = effective_scheduler(ledger, task, conf['tasks'][task])
             result['schedule_amendment'] = {'plan': SCHEDULE_PLAN, 'intent': ledger.get(_schedule_keys()[0]),
                                              'commit': ledger.get(_schedule_keys()[1]), 'native_trigger_verified': False}
-        try: context = native_context(task, conf)
+        if task == 'agi' and ledger.get(_continuation_keys()[0]) is not None:
+            result['schedule_continuation'] = {
+                'plan': CONTINUATION_PLAN, 'intent': ledger.get(_continuation_keys()[0]),
+                'commit': ledger.get(_continuation_keys()[1]),
+                'source_renewal': ledger.get(_source_renewal_key()),
+                'pending_commit': ledger.get(_continuation_keys()[1]) is None,
+                'current_native_schedule': scheduler_metadata(task), 'native_trigger_verified': False}
+        try: context = context or native_context(task, conf)
         except (PermissionError, OSError, sqlite3.Error): return result
         key = digest([task, context['session'], context['turn']])
+        # The per-task lock is held, but IPC/filesystem checks must not hold
+        # evolution.sqlite's database-wide writer transaction.
+        confirmed = native_context(task, conf)
+        if (confirmed['session'], confirmed['turn']) != (context['session'], context['turn']):
+            raise PermissionError('current_native_turn_changed')
         with ledger.tx():
             ledger.db.execute('INSERT OR IGNORE INTO uses VALUES(?,?,?,?,?,?,?,NULL)',
                               (key, task, context['session'], context['turn'], spec['version'], digest(spec), time.time()))
@@ -656,11 +1336,13 @@ def record_run(store, task, payload):
     source, ref = checked_source(task, payload['source'])
     archive, archive_ref = checked_source(task, payload['archive_source']) if payload['archive_source'] else (None, None)
     stages = normalize(task, source, archive)
-    with Ledger(root) as ledger:
+    with Ledger(root) as ledger, task_lock(ledger, task):
         if ledger.get('enabled') is not True: raise PermissionError('maintenance_paused')
+        if _continuation_pending(ledger, task, conf['tasks'][task]) is not None:
+            raise PermissionError('continuation_commit_pending')
         if scheduler_metadata(task) != effective_scheduler(ledger, task, conf['tasks'][task]):
             raise PermissionError('original_scheduler_definition_changed')
-        with task_lock(ledger, task): return _record_run_locked(ledger, conf, task, context, payload, stages, ref, archive_ref)
+        return _record_run_locked(ledger, conf, task, context, payload, stages, ref, archive_ref)
 
 
 def _record_run_locked(ledger, conf, task, context, payload, stages, ref, archive_ref):
@@ -678,6 +1360,9 @@ def _record_run_locked(ledger, conf, task, context, payload, stages, ref, archiv
             return {'recorded': True, 'idempotent': True, 'retirement_eligible': retirement_eligible(conf['tasks'][task], task, stages)}
         for item in value['sources']:
             if checked_source(task, item['path'])[1] != item: raise ValueError('source_changed_before_run_commit')
+        confirmed = native_context(task, conf)
+        if (confirmed['session'], confirmed['turn']) != (context['session'], context['turn']):
+            raise PermissionError('current_native_turn_changed')
         with ledger.tx():
             current = ledger.db.execute('SELECT result FROM uses WHERE id=?', (key,)).fetchone()
             if not current or current['result'] != use['result']: raise ValueError('native_run_result_changed_before_commit')
@@ -720,6 +1405,8 @@ def retirement_eligible(binding, task, stages):
 
 
 def native_retirement_ready(ledger, task, conf, context):
+    if task == 'agi' and _continuation_pending(ledger, task, conf['tasks'][task]) is not None:
+        return False
     if ledger.get('enabled') is not True: return False
     key = digest([task, context['session'], context['turn']])
     use = ledger.db.execute('SELECT result FROM uses WHERE id=?', (key,)).fetchone()
@@ -791,7 +1478,7 @@ def tick(store):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('action', choices=('configure', 'read', 'record-run', 'record-retirement', 'status', 'pause', 'resume', 'retirement-check', 'prepare-reschedule', 'commit-reschedule'))
+    parser.add_argument('action', choices=('configure', 'read', 'record-run', 'record-retirement', 'status', 'pause', 'resume', 'retirement-check', 'prepare-reschedule', 'commit-reschedule', 'prepare-continuation', 'commit-continuation'))
     parser.add_argument('--task', choices=tuple(TASKS)); parser.add_argument('--input', type=Path)
     args = parser.parse_args()
     from .store import Store
@@ -804,10 +1491,12 @@ def main():
     payload = read_json(args.input)[0] if args.input else {}
     with Store() as store:
         if args.action == 'configure': return configure(store, payload)
-        if args.action == 'read': return load_task(store, args.task)
+        if args.action == 'read': return load_task(store, args.task, source_renewal=payload if args.input else None)
         if args.action == 'record-run': return record_run(store, args.task, payload)
         if args.action == 'prepare-reschedule': return prepare_reschedule(store, args.task, payload)
         if args.action == 'commit-reschedule': return commit_reschedule(store, args.task, payload)
+        if args.action == 'prepare-continuation': return prepare_continuation(store, args.task, payload)
+        if args.action == 'commit-continuation': return commit_continuation(store, args.task, payload)
         if args.action == 'record-retirement': return record_retirement(store, args.task)
         root, conf = authorized(store)
         if args.action == 'retirement-check':

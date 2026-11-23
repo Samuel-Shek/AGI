@@ -68,6 +68,19 @@ def ensure_quality_advice_defaults(conn: sqlite3.Connection) -> None:
         )
 
 
+def _ensure_status_defaults(conn: sqlite3.Connection) -> None:
+    """Release our defaults writer before dependency reads, not a caller's."""
+    own_transaction = not conn.in_transaction
+    try:
+        ensure_quality_advice_defaults(conn)
+        if own_transaction:
+            conn.commit()
+    except BaseException:
+        if own_transaction and conn.in_transaction:
+            conn.rollback()
+        raise
+
+
 def configure_quality_advice(
     conn: sqlite3.Connection,
     root_dir: str | Path,
@@ -96,7 +109,7 @@ def configure_quality_advice(
 
 
 def quality_advice_status(conn: sqlite3.Connection, root_dir: str | Path) -> dict:
-    ensure_quality_advice_defaults(conn)
+    _ensure_status_defaults(conn)
     root = Path(root_dir)
     enabled = _bool_setting(conn, "quality_advice_enabled", DEFAULT_QUALITY_ADVICE_ENABLED)
     profile = _get_setting(conn, "quality_advice_hermes_profile", DEFAULT_QUALITY_ADVICE_PROFILE)
@@ -156,7 +169,7 @@ def quality_advice_status(conn: sqlite3.Connection, root_dir: str | Path) -> dic
 
 
 def validate_quality_advice(conn: sqlite3.Connection, root_dir: str | Path) -> dict:
-    ensure_quality_advice_defaults(conn)
+    _ensure_status_defaults(conn)
     root = Path(root_dir)
     profile = _get_setting(conn, "quality_advice_hermes_profile", DEFAULT_QUALITY_ADVICE_PROFILE)
     hermes_bin = _hermes_executable()

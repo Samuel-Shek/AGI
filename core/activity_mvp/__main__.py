@@ -79,6 +79,7 @@ from .context_console import (
     LOCAL_HANDOFF_VERSION,
     MAX_CONTRACT_BYTES,
     MEMORY_CANDIDATE_LIST_VERSION,
+    OWNER_CONTEXT_ACTION_VERSION,
     PRODUCT_EXPERIMENT_FINALIZE_CONFIRMATION,
     PRODUCT_EXPERIMENT_STATUS_VERSION,
     build_local_handoff,
@@ -196,7 +197,7 @@ DEFAULT_PACKAGE_DIR = "data/ha_packages"
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="AGI local-first personal context recall core")
+    parser = argparse.ArgumentParser(description="PSI local-first personal context recall core")
     parser.add_argument("--db", default=DEFAULT_DB, help="SQLite database path")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -308,6 +309,7 @@ def main() -> None:
         ("delivery-status", "Read DeliveryStatusV1 from bounded JSON stdin"),
         ("local-handoff", "Create one verified-only LocalHandoffV1 from bounded JSON stdin"),
         ("owner-action", "Apply one explicit OwnerContextActionV1 from bounded JSON stdin"),
+        ("owner-action-receipt", "Read the exact existing owner action receipt without replay"),
         ("product-feedback", "Record one source-bound ProductFeedbackV1 from bounded JSON stdin"),
     ):
         phase2_command = context_console_sub.add_parser(command_name, help=help_text)
@@ -509,11 +511,11 @@ def main() -> None:
 
     sharing = sub.add_parser("codex-sharing", help="Owner-local confirmed context sharing; never exposed as an MCP mutation")
     add_db(sharing)
-    sharing.add_argument("--action", required=True, choices=("snapshot", "manual-note", "confirm-card", "share", "withdraw", "feedback"))
+    sharing.add_argument("--action", required=True, choices=("snapshot", "manual-note", "manual-note-receipt", "confirm-card", "confirm-card-receipt", "share", "share-receipt", "withdraw", "withdraw-receipt", "feedback", "feedback-receipt"))
     sharing.add_argument("--payload-stdin", action="store_true", required=True)
     sharing = sub.add_parser("agi-sharing", help="Owner-local confirmed context sharing; never exposed as an MCP mutation")
     add_db(sharing)
-    sharing.add_argument("--action", required=True, choices=("snapshot", "manual-note", "confirm-card", "share", "withdraw", "feedback"))
+    sharing.add_argument("--action", required=True, choices=("snapshot", "manual-note", "manual-note-receipt", "confirm-card", "confirm-card-receipt", "share", "share-receipt", "withdraw", "withdraw-receipt", "feedback", "feedback-receipt"))
     sharing.add_argument("--payload-stdin", action="store_true", required=True)
 
     screen_capture = sub.add_parser(
@@ -1033,6 +1035,7 @@ def main() -> None:
     add_db(activity_confirmation_clarify)
     activity_confirmation_clarify.add_argument("--group-key", required=True)
     activity_confirmation_clarify.add_argument("--member-revision", required=True)
+    activity_confirmation_clarify.add_argument("--save-request", default="")
     activity_confirmation_clarify_note = activity_confirmation_clarify.add_mutually_exclusive_group()
     activity_confirmation_clarify_note.add_argument("--note", default="", help=argparse.SUPPRESS)
     activity_confirmation_clarify_note.add_argument(
@@ -1063,6 +1066,13 @@ def main() -> None:
     add_db(activity_confirmation_manual)
     activity_confirmation_manual.add_argument("--confirm", required=True)
     activity_confirmation_manual.add_argument("--payload-stdin", action="store_true", required=True)
+    activity_form_receipt = activity_confirmation_sub.add_parser("save-receipt", help="Read an exact activity form save without mutation")
+    add_db(activity_form_receipt)
+    activity_form_receipt.add_argument("--payload-stdin", action="store_true", required=True)
+    activity_confirmation_receipt = activity_confirmation_sub.add_parser("manual-receipt", help="Read an exact manual activity receipt without writing")
+    add_db(activity_confirmation_receipt)
+    activity_confirmation_receipt.add_argument("--confirm", required=True)
+    activity_confirmation_receipt.add_argument("--payload-stdin", action="store_true", required=True)
     activity_confirmation_settle = activity_confirmation_sub.add_parser(
         "settle",
         help="Materialize and persist one content-free daily confirmation settlement",
@@ -1098,7 +1108,7 @@ def main() -> None:
     qf_list.add_argument("--from", dest="start")
     qf_list.add_argument("--to", dest="end")
 
-    attention = sub.add_parser("attention-center", help="AGI decision workspace")
+    attention = sub.add_parser("attention-center", help="PSI decision workspace")
     attention.add_argument("arguments", nargs=argparse.REMAINDER)
 
     closure = sub.add_parser("task-closure", help="Closure Steward private task ledger")
@@ -1217,6 +1227,7 @@ def main() -> None:
             "delivery-status",
             "local-handoff",
             "owner-action",
+            "owner-action-receipt",
             "product-feedback",
         }:
             body = sys.stdin.buffer.read(MAX_CONTRACT_BYTES + 1)
@@ -1228,8 +1239,8 @@ def main() -> None:
                 payload = delivery_status(conn, body)
             elif command == "local-handoff":
                 payload = build_local_handoff(conn, body)
-            elif command == "owner-action":
-                payload = owner_context_action(conn, body)
+            elif command in {"owner-action", "owner-action-receipt"}:
+                payload = owner_context_action(conn, body, receipt_only=command.endswith("-receipt"))
             else:
                 payload = record_product_feedback(conn, body)
             print_json(payload)
@@ -1612,20 +1623,24 @@ def main() -> None:
 
 
     if args.command in {"codex-sharing", "agi-sharing"}:
+        from .codex_bridge import OwnerActionRejected
         if args.command == "agi-sharing":
             from .agi_bridge import owner_action
         else:
             from .codex_bridge import owner_action
+        invoked = False
         try:
             raw = sys.stdin.buffer.read(32769)
             if len(raw) > 32768:
                 raise ValueError("payload_too_large")
             payload = json.loads(raw)
+            invoked = True
             print_json(owner_action(conn, args.action, payload))
-        except (ValueError, OSError, sqlite3.Error):
+        except (ValueError, OSError, sqlite3.Error) as exc:
             if conn.in_transaction:
                 conn.rollback()
-            print_json({"status": "rejected", "reason_code": "owner_action_invalid_stale_or_busy", "raw_access": False})
+            print_json({"status": "rejected", "reason_code": "owner_action_invalid_stale_or_busy", "raw_access": False,
+                        "save_state": "save_failed" if not invoked or isinstance(exc, OwnerActionRejected) else "unknown"})
         return
     if args.command == "configure-screen-capture":
         print_json(configure_screen_capture(conn, enabled=args.enabled == "on"))
@@ -2100,29 +2115,41 @@ def main() -> None:
                     group_key=args.group_key,
                     member_revision=args.member_revision,
                     note=_activity_confirmation_note(args),
+                    save_request=args.save_request,
                 )
             )
             return
         if args.activity_confirmation_command == "configure":
             print_json(configure_activity_confirmations(conn, mode=args.mode))
             return
-        if args.activity_confirmation_command == "manual-add":
-            payload = _activity_confirmation_json_stdin(
-                max_bytes=8192,
-                allowed_keys={"safe_label", "workstream", "outcome", "started_at", "ended_at"},
-            )
-            print_json(
-                manual_add_confirmed_activity(
-                    conn,
-                    confirmation_action=args.confirm,
-                    safe_label=str(payload.get("safe_label") or ""),
-                    workstream=str(payload.get("workstream") or ""),
-                    outcome=str(payload.get("outcome") or "unknown"),
-                    started_at=str(payload.get("started_at") or ""),
-                    ended_at=str(payload.get("ended_at") or "") or None,
-                )
-            )
+        if args.activity_confirmation_command == "save-receipt":
+            from .activity_confirmations import saved_form_receipt
+            payload = _activity_confirmation_json_stdin(max_bytes=8192, allowed_keys={"group_key", "member_revision", "item_key", "answer", "reason", "note", "workstream", "outcome", "purpose", "save_request"})
+            print_json(saved_form_receipt(conn, payload))
             return
+        if args.activity_confirmation_command in {"manual-add", "manual-receipt"}:
+            from .activity_confirmations import ManualActivityInputError
+            try:
+                payload = _activity_confirmation_json_stdin(
+                    max_bytes=8192,
+                    allowed_keys={"safe_label", "workstream", "outcome", "started_at", "ended_at"},
+                )
+                print_json(
+                    manual_add_confirmed_activity(
+                        conn,
+                        confirmation_action=args.confirm,
+                        receipt_only=args.activity_confirmation_command == "manual-receipt",
+                        safe_label=str(payload.get("safe_label") or ""),
+                        workstream=str(payload.get("workstream") or ""),
+                        outcome=str(payload.get("outcome") or "unknown"),
+                        started_at=str(payload.get("started_at") or ""),
+                        ended_at=str(payload.get("ended_at") or "") or None,
+                    )
+                )
+                return
+            except ManualActivityInputError:
+                print_json({"status":"rejected", "reason_code":"invalid_manual_activity_input", "raw_access":False})
+                return
         if args.activity_confirmation_command == "settle":
             print_json(settle_activity_confirmations(conn, report_date=args.date))
             return
@@ -2635,6 +2662,8 @@ def add_db(parser: argparse.ArgumentParser) -> None:
 
 
 def _read_only_command(args: argparse.Namespace) -> bool:
+    if args.command in {"codex-sharing", "agi-sharing"} and getattr(args, "action", "").endswith("-receipt"):
+        return True
     if args.command == "document-signal-collisions" and getattr(args, "mode", "dry-run") in {"dry-run", "preview"}:
         return True
     if args.command == "context-console" and getattr(args, "context_console_command", "") in {
@@ -2644,6 +2673,7 @@ def _read_only_command(args: argparse.Namespace) -> bool:
         "snapshot",
         "memory-candidates",
         "delivery-status",
+        "owner-action-receipt",
     }:
         return True
     if args.command == "status" and getattr(args, "quick", False):
@@ -2672,6 +2702,8 @@ def _read_only_command(args: argparse.Namespace) -> bool:
         "list",
         "cards",
         "revision",
+        "manual-receipt",
+        "save-receipt",
     }:
         return True
     if args.command == "get-package":
@@ -2692,12 +2724,13 @@ def _phase2_context_read_command(args: argparse.Namespace) -> bool:
         args,
         "context_console_command",
         "",
-    ) in {"snapshot", "memory-candidates", "delivery-status", "experiment-status"}
+    ) in {"snapshot", "memory-candidates", "delivery-status", "experiment-status", "owner-action-receipt"}
 
 
 def _phase2_context_contract_version(args: argparse.Namespace) -> str:
     return {
         "snapshot": CONTEXT_SNAPSHOT_VERSION,
+        "owner-action-receipt": OWNER_CONTEXT_ACTION_VERSION,
         "memory-candidates": MEMORY_CANDIDATE_LIST_VERSION,
         "delivery-status": DELIVERY_STATUS_VERSION,
         "experiment-status": PRODUCT_EXPERIMENT_STATUS_VERSION,

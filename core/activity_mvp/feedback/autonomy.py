@@ -9,7 +9,7 @@ from .work import WorkQueue, POLICY
 from . import model, sources
 
 TECHNICAL_REASONS = {
-    '这项批评涉及 AGI 自动修复范围之外，或尚未确定目标。',
+    '这项批评涉及 PSI 自动修复范围之外，或尚未确定目标。',
     '新事件可能与已修复问题同类，需要核对复发证据。',
     '同一故障在修复后再次出现。',
     '上次执行中断，结果待核对。',
@@ -64,66 +64,144 @@ def version(store, incident, target):
     return digest([refs, answers, samples, target.get('project_id'), target.get('source_revision'), POLICY])
 
 
+SYNC_LIMIT = 64
+
+
+def requires_reconciliation(work):
+    """Unknown legacy outcomes remain sticky across new input and scheduling."""
+    return bool(work and (work['state'] in {'running', 'verifying'} or
+        work.get('result', {}).get('reason') == 'interrupted_outcome_requires_reconciliation'))
+
+
 def synchronize(store):
-    store=filtered(store)
-    """One consistent project snapshot per pass; sources remain individually checked."""
-    store._autonomy_project_identities = {}
+    """A bounded round-robin pass; identifiers never grant source access."""
+    from ..local_checks import phase, LOCAL_SECONDS, LocalCheckTimeout
+    result = {'status': 'ok', 'migrated': 0, 'checked': 0, 'synchronized': 0}
+    started = time.time()
     try:
-        return _synchronize(store)
-    finally:
-        del store._autonomy_project_identities
+        with phase(store, 'autonomy', LOCAL_SECONDS):
+            store = filtered(store)
+            store._autonomy_project_identities = {}
+            try:
+                _synchronize(store, result)
+            finally:
+                del store._autonomy_project_identities
+    except LocalCheckTimeout:
+        result.update(status='deferred', reason='local_check_timeout')
+    # Fixed metadata only. No row IDs, source paths, titles or draft text.
+    store.set('autonomy_sync_result', {**result, 'started_at': started, 'checked_at': time.time()})
+    return result
 
 
-def _synchronize(store):
-    """Migrate canned technical escalations, preserving decisions and quotations."""
+def _synchronize(store, result):
+    from ..local_checks import ScanBatch
+    from ..presentation_scope import ReadView
+    from ..conversation_scope import bind
     if not enabled(store):
-        return {'status': 'not_enabled', 'migrated': 0}
+        result['status'] = 'not_enabled'
+        return
+    current = bind(lambda: active(store))
     queue = WorkQueue(store)
+    raw = getattr(store, 'original', store).conn
+    if isinstance(raw, ReadView): raw = raw.raw
+    after = store.get('autonomy_sync_after', '')
+    if not isinstance(after, str): after = ''
+    # Include dismissed rows, so their existing work is retired by the same
+    # guarded per-item path. Raw selection returns only opaque primary keys.
+    ids = [row[0] for row in raw.execute(
+        'SELECT id FROM main.incidents WHERE id>? ORDER BY id LIMIT ?', (after, SYNC_LIMIT + 1))]
+    if len(ids) < SYNC_LIMIT + 1:
+        ids.extend(row[0] for row in raw.execute(
+            'SELECT id FROM main.incidents WHERE id<=? ORDER BY id LIMIT ?',
+            (after, SYNC_LIMIT + 1 - len(ids))))
+    batch = ScanBatch()
+    for ident in ids[:SYNC_LIMIT]:
+        if not current():
+            result['status'] = 'paused'
+            return
+        if batch.yield_now(): break
+        # Advance before an attempted read: one unavailable source cannot
+        # indefinitely starve the other rows. It is revisited next rotation.
+        store.set('autonomy_sync_after', ident)
+        result['checked'] += 1
+        row, migrated = _synchronize_one(store, queue, ident)
+        result['migrated'] += migrated
+        result['synchronized'] += int(row is not None)
+        batch.complete()
+    if result['checked'] < len(ids): result['status'] = 'backfill'
+
+
+def refresh_work(store, work):
+    """Refresh one selected item under the existing local read deadline."""
+    from ..local_checks import phase, LOCAL_SECONDS
+    with phase(store, 'autonomy', LOCAL_SECONDS):
+        return _refresh_work(store, work)
+
+
+def _refresh_work(store, work):
+    """Caller holds the preparation deadline; never replay unknown outcomes."""
+    from ..conversation_scope import bind
+    current = bind(lambda: active(store))
+    if not current(): return None
+    store = filtered(store)
+    row, _ = _synchronize_one(store, WorkQueue(store), work['reference'])
+    if not current() or row is None or row['id'] != work['id']: return None
+    return row
+
+
+def _synchronize_one(store, queue, ident):
+    # The full current projection and explicit admission apply to every row.
+    rows = store.rows('SELECT * FROM incidents WHERE id=?', (ident,))
+    if not rows or not sources.incident_admitted(store, ident): return None, 0
+    incident = rows[0]
+    prior = queue.get(digest(['feedback', ident])[:24])
+    # An in-flight/unknown publication must remain on its receipt-only path,
+    # including if a new choice or dismissal arrives during the transaction.
+    if requires_reconciliation(prior): return prior, 0
+    if incident['state'] == 'dismissed':
+        if prior and prior['state'] != 'resolved':
+            prior = queue.update(prior['id'], 'resolved', summary='你已明确排除这项；保留历史记录，不宣称故障已修复。',
+                result={'summary': '用户已排除', 'verification_summary': '未作为自动改进成功计数。'}, processed_revision=prior['source_revision'])
+        return prior, 0
     migrated = 0
-    for prior in queue.items('feedback'):
-        current=store.rows('SELECT state FROM incidents WHERE id=?',(prior['reference'],))
-        if current and current[0]['state']=='dismissed' and prior['state']!='resolved':
-            queue.update(prior['id'],'resolved',summary='你已明确排除这项；保留历史记录，不宣称故障已修复。',result={'summary':'用户已排除','verification_summary':'未作为自动改进成功计数。'},processed_revision=prior['source_revision'])
-    admitted=[r["id"] for r in store.rows("SELECT id FROM incidents WHERE state!='dismissed'") if sources.incident_admitted(store,r["id"])]
-    for incident in (store.rows("SELECT * FROM incidents WHERE id=?",(ident,))[0] for ident in admitted):
-        decisions = store.rows("SELECT * FROM decisions WHERE incident_id=? AND state='pending'", (incident['id'],))
-        preserve_choice = False
-        for decision in decisions:
-            proposal = json.loads(decision['proposal'])
-            technical = proposal.get('reason_code') not in HUMAN_REASONS and (proposal.get('reason') in TECHNICAL_REASONS or ('failure' in proposal and 'attempts' in proposal))
-            # A genuine choice, including one the user deferred, is never auto-answered.
-            if not technical:
-                preserve_choice = True
-                continue
-            with store.tx():
-                store.conn.execute("UPDATE decisions SET state='superseded' WHERE id=? AND state='pending'", (decision['id'],))
-                store.conn.execute("UPDATE incidents SET state='investigating' WHERE id=? AND state IN ('decision','recurred')", (incident['id'],))
-                store.log('technical_decision_rerouted', decision=decision['id'], incident=incident['id'], policy=POLICY)
-                # Do not deliver an obsolete generic prompt after migration.
-                store.conn.execute("UPDATE notifications SET delivered=1 WHERE incident_id=? AND kind='decision' AND delivered=0", (incident['id'],))
-            migrated += 1
-        try:
-            target = binding(store, incident)
-            revision = version(store, incident, target)
-        except (OSError, ValueError, PermissionError):
-            target = {'status': 'waiting_evidence', 'project_id': '', 'reason': '当前来源或项目身份暂不可核对。'}
-            revision = digest([incident['id'], 'source_unavailable', POLICY])
-        row = queue.enqueue('feedback', incident['id'], revision, target.get('project_id', ''))
-        from .routing import current_route
-        routing=current_route(store,incident,target,revision)
-        if row.get('routing')!=routing:
-            row=queue.update(row['id'],row['state'],routing=routing)
-        if not row['summary']:
-            row=queue.update(row['id'],row['state'],summary=sources.clean(incident['title'])[0][:300])
-        if preserve_choice and row['state'] != 'human_required':
-            queue.update(row['id'], 'human_required', summary='保留已提出的具体选择，等待明确答复。')
-        elif incident['state']=='verified' and incident['verified_at']:
-            verified_binding=store.get('work_verifications',{}).get(incident['id'])
-            if verified_binding==revision and row['state']!='verified':
-                queue.update(row['id'],'verified',summary='已通过固定验证器核对自然使用证据。',processed_revision=revision)
-            elif verified_binding!=revision and row['state'] not in {'queued','investigating'}:
-                queue.update(row['id'],'queued',summary='来源已变化，原有验证保留为历史，系统将重新核对。')
-    return {'status': 'ok', 'migrated': migrated, 'work_count': len(queue.items('feedback'))}
+    decisions = store.rows("SELECT * FROM decisions WHERE incident_id=? AND state='pending'", (incident['id'],))
+    preserve_choice = False
+    for decision in decisions:
+        proposal = json.loads(decision['proposal'])
+        technical = proposal.get('reason_code') not in HUMAN_REASONS and (proposal.get('reason') in TECHNICAL_REASONS or ('failure' in proposal and 'attempts' in proposal))
+        # A genuine choice, including one the user deferred, is never auto-answered.
+        if not technical:
+            preserve_choice = True
+            continue
+        with store.tx():
+            store.conn.execute("UPDATE decisions SET state='superseded' WHERE id=? AND state='pending'", (decision['id'],))
+            store.conn.execute("UPDATE incidents SET state='investigating' WHERE id=? AND state IN ('decision','recurred')", (incident['id'],))
+            store.log('technical_decision_rerouted', decision=decision['id'], incident=incident['id'], policy=POLICY)
+            # Do not deliver an obsolete generic prompt after migration.
+            store.conn.execute("UPDATE notifications SET delivered=1 WHERE incident_id=? AND kind='decision' AND delivered=0", (incident['id'],))
+        migrated += 1
+    try:
+        target = binding(store, incident)
+        revision = version(store, incident, target)
+    except (OSError, ValueError, PermissionError):
+        target = {'status': 'waiting_evidence', 'project_id': '', 'reason': '当前来源或项目身份暂不可核对。'}
+        revision = digest([incident['id'], 'source_unavailable', POLICY])
+    row = queue.enqueue('feedback', incident['id'], revision, target.get('project_id', ''))
+    from .routing import current_route
+    routing=current_route(store,incident,target,revision)
+    if row.get('routing')!=routing:
+        row=queue.update(row['id'],row['state'],routing=routing)
+    if not row['summary']:
+        row=queue.update(row['id'],row['state'],summary=sources.clean(incident['title'])[0][:300])
+    if preserve_choice and row['state'] != 'human_required':
+        queue.update(row['id'], 'human_required', summary='保留已提出的具体选择，等待明确答复。')
+    elif incident['state']=='verified' and incident['verified_at']:
+        verified_binding=store.get('work_verifications',{}).get(incident['id'])
+        if verified_binding==revision and row['state']!='verified':
+            queue.update(row['id'],'verified',summary='已通过固定验证器核对自然使用证据。',processed_revision=revision)
+        elif verified_binding!=revision and row['state'] not in {'queued','investigating'}:
+            queue.update(row['id'],'queued',summary='来源已变化，原有验证保留为历史，系统将重新核对。')
+    return queue.get(row['id']), migrated
 
 
 ITEM = {'type': 'object', 'additionalProperties': False,
@@ -145,17 +223,55 @@ human 只用于当前确实需要个人取舍、新权限、付款、对外动�
 每条输入恰好返回一项，中文说明各不超过240字。'''
 
 
-def investigate(store, limit=5):
-    store=filtered(store)
-    if not active(store):
-        return {'status': 'paused', 'processed': 0}
+def candidate_work_ids(store, condition, args, marker):
+    """Bounded metadata selection only; callers must read the live projection."""
+    from ..presentation_scope import ReadView
+    raw = getattr(store, 'original', store).conn
+    if isinstance(raw, ReadView): raw = raw.raw
+    after = store.get(marker, '')
+    if not isinstance(after, str): after = ''
+    ids = [row[0] for row in raw.execute(
+        'SELECT id FROM main.work_items WHERE '+condition+' AND id>? ORDER BY id LIMIT ?',
+        (*args, after, SYNC_LIMIT))]
+    if len(ids) < SYNC_LIMIT:
+        ids.extend(row[0] for row in raw.execute(
+            'SELECT id FROM main.work_items WHERE '+condition+' AND id<=? ORDER BY id LIMIT ?',
+            (*args, after, SYNC_LIMIT-len(ids))))
+    return ids
+
+
+def assert_selected_inputs(store, work, incident, current):
+    """Read-only recheck, including when a selected repair is already running."""
+    if not current(): raise PermissionError('autonomy_paused')
+    rows = store.rows('SELECT * FROM incidents WHERE id=?', (incident['id'],))
+    if (not rows or rows[0]['state'] == 'dismissed'
+            or rows[0]['revision'] != incident['revision']
+            or store.rows("SELECT id FROM decisions WHERE incident_id=? AND state='pending'", (incident['id'],))
+            or version(store, rows[0], binding(store, rows[0])) != work['source_revision']):
+        raise PermissionError('investigation_inputs_changed')
+    if not current(): raise PermissionError('autonomy_paused')
+
+
+def _investigation_inputs(store, limit, references):
     queue = WorkQueue(store)
-    pending = sorted((r for r in queue.items('feedback') if r['state'] in {'queued', 'investigating', 'waiting_evidence'}
-                      and r['processed_revision'] != r['source_revision'] and r['next_check'] <= time.time()), key=lambda r: (r['attempts'], r['updated']))
-    pending=[r for r in pending if sources.incident_admitted(store,r['reference'])][:limit]
+    from ..local_checks import ScanBatch
+    marker = 'autonomy_investigation_after'
+    pending = (candidate_work_ids(store,
+        "kind='feedback' AND state IN ('queued','investigating','waiting_evidence') AND processed_revision!=source_revision AND next_check<=?",
+        (time.time(),), marker) if references is None else [digest(['feedback', ref])[:24] for ref in references[:limit]])
     inputs = []
     candidates = {}
-    for work in pending:
+    batch = ScanBatch()
+    for ident in pending:
+        if batch.yield_now(): break
+        if references is None: store.set(marker, ident)
+        batch.complete()
+        work = queue.get(ident)
+        if not work or requires_reconciliation(work): continue
+        work = _refresh_work(store, work)
+        if (not work or work['state'] not in {'queued', 'investigating', 'waiting_evidence'}
+                or work['processed_revision'] == work['source_revision']
+                or work['next_check'] > time.time()): continue
         if not sources.incident_admitted(store,work["reference"]):continue
         rows = store.rows('SELECT * FROM incidents WHERE id=?', (work['reference'],))
         if not rows:
@@ -174,13 +290,32 @@ def investigate(store, limit=5):
                        'evidence': [{'summary': e.get('summary', ''), 'kind': e.get('kind', '')} for e in evidence if isinstance(e, dict)],
                        'owner_answers': [{'choice': d['choice'], 'proposal': json.loads(d['proposal'])} for d in store.rows("SELECT choice,proposal FROM decisions WHERE incident_id=? AND state='answered' ORDER BY decided DESC LIMIT 3",(incident['id'],))]})
         candidates[work['id']] = (work, incident, target)
+        if len(inputs) >= limit: break
+    return inputs, candidates
+
+
+def investigate(store, limit=5, *, references=None):
+    from ..local_checks import phase, LOCAL_SECONDS
+    from ..conversation_scope import bind
+    current = bind(lambda: active(store))
+    with phase(store, 'feedback_prepare', LOCAL_SECONDS):
+        store = filtered(store)
+        if not current():
+            return {'status': 'paused', 'processed': 0}
+        inputs, candidates = _investigation_inputs(store, limit, references)
     if not inputs:
         return {'status': 'idle', 'processed': 0}
-    result, request = model.invoke(store, PROMPT + '\n' + packed({'work': inputs, 'existing_rules': LESSONS}), SCHEMA)
+    queue = WorkQueue(store)
+    def admit():
+        with phase(store, 'submission_check', LOCAL_SECONDS):
+            for work, incident, _ in candidates.values():
+                assert_selected_inputs(store, work, incident, current)
+    result, request = model.invoke(store, PROMPT + '\n' + packed({'work': inputs, 'existing_rules': LESSONS}),
+                                   SCHEMA, admission_check=admit, dispatch_check=admit, continue_check=current)
     items = result.get('items')
     if not isinstance(items, list) or len(items) != len(candidates) or {r.get('id') for r in items} != set(candidates):
         raise ValueError('investigation_mapping_invalid')
-    if not active(store):
+    if not current():
         raise PermissionError('autonomy_paused')
     for item in items:
         if set(item) != set(ITEM['required']) or item['disposition'] not in {'repair','lesson','wait','human'}:
@@ -191,10 +326,10 @@ def investigate(store, limit=5):
         if version(store, incident, binding(store, incident)) != work['source_revision']:
             raise ValueError('investigation_inputs_changed')
     with store.tx():
-        if not active(store): raise PermissionError('autonomy_paused')
+        if not current(): raise PermissionError('autonomy_paused')
         for work, incident, target in candidates.values():
-            current=store.rows('SELECT * FROM incidents WHERE id=?',(incident['id'],))
-            if not current or current[0]['revision']!=incident['revision'] or current[0]['state']=='dismissed' or version(store,current[0],binding(store,current[0]))!=work['source_revision']:
+            latest=store.rows('SELECT * FROM incidents WHERE id=?',(incident['id'],))
+            if not latest or latest[0]['revision']!=incident['revision'] or latest[0]['state']=='dismissed' or version(store,latest[0],binding(store,latest[0]))!=work['source_revision']:
                 raise ValueError('investigation_inputs_changed')
         for item in items:
             work, incident, target = candidates[item['id']]
@@ -217,7 +352,7 @@ def investigate(store, limit=5):
                 store.set('behavior_lessons', lessons)
                 state = 'observing'
                 outcome['changes'] = [LESSONS[item['lesson_id']]]
-                outcome['verification_summary'] = '已纳入 AGI 后续调查的执行约束；原事件及其他 AI 的自然改善尚未验证。'
+                outcome['verification_summary'] = '已纳入 PSI 后续调查的执行约束；原事件及其他 AI 的自然改善尚未验证。'
                 outcome['lesson_id'] = item['lesson_id']
             elif item['disposition'] == 'human' and item['human_reason'] in HUMAN_REASONS:
                 options = item['alternatives']
@@ -233,7 +368,9 @@ def investigate(store, limit=5):
                 store.conn.execute('UPDATE incidents SET state=?,cause=?,gap=?,updated=? WHERE id=?',
                                    ('investigating' if state=='ready' else 'waiting_evidence', summary, outcome['verification_summary'], time.time(), incident['id']))
         store.log('autonomous_investigation', request=request, processed=len(items))
-    return {'status': 'processed', 'processed': len(items)}
+    return {'status': 'processed', 'processed': len(items),
+            'processed_references': [work['reference'] for work, _, _ in candidates.values()],
+            'processed_revisions': {work['reference']: incident['revision'] for work, incident, _ in candidates.values()}}
 
 
 def lesson_context(store):

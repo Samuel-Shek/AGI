@@ -30,15 +30,31 @@ class WorkQueue:
                 store.conn.execute("ALTER TABLE work_items ADD COLUMN routing TEXT NOT NULL DEFAULT '{}'")
     def enqueue(self, kind, reference, revision, project_id=""):
         key = digest([kind, reference])[:24]
-        row = self.get(key)
-        if row is None:
-            self.store.conn.execute("INSERT INTO work_items(id,kind,reference,source_revision,project_id,updated,policy) VALUES(?,?,?,?,?,?,?)", (key,kind,reference,revision,project_id,time.time(),POLICY))
-            self.event(key, "queued", {})
-        elif row["source_revision"] != revision:
-            state=row['state'] if row['state'] in {'running','verifying'} else 'queued'
-            self.store.conn.execute("UPDATE work_items SET source_revision=?,state=?,next_check=0,updated=?,project_id=? WHERE id=?", (revision,state,time.time(),project_id,key))
-            self.event(key, "source_changed", {"previous_revision":row["source_revision"]})
-        return self.get(key)
+        # A scoped read may hide a durable row. Its absence is not permission
+        # to replace it or to read through the underlying connection. Resolve
+        # only the exact identity conflict, then require the normal projection.
+        conn = self.store.conn
+        conn.execute("SAVEPOINT work_enqueue")
+        try:
+            inserted = conn.execute("INSERT INTO work_items(id,kind,reference,source_revision,project_id,updated,policy) VALUES(?,?,?,?,?,?,?) ON CONFLICT(kind,reference) DO NOTHING", (key,kind,reference,revision,project_id,time.time(),POLICY)).rowcount == 1
+            row = self.get(key)
+            if row is None:
+                raise PermissionError("work_item_not_visible")
+            if inserted:
+                self.event(key, "queued", {})
+            elif row["source_revision"] != revision:
+                state=row['state'] if row['state'] in {'running','verifying','human_required'} else 'queued'
+                conn.execute("UPDATE work_items SET source_revision=?,state=?,next_check=0,updated=?,project_id=? WHERE id=?", (revision,state,time.time(),project_id,key))
+                self.event(key, "source_changed", {"previous_revision":row["source_revision"]})
+            result = self.get(key)
+            if result is None:
+                raise PermissionError("work_item_not_visible")
+            conn.execute("RELEASE work_enqueue")
+            return result
+        except BaseException:
+            conn.execute("ROLLBACK TO work_enqueue")
+            conn.execute("RELEASE work_enqueue")
+            raise
     def get(self,key):
         rows=self.store.rows("SELECT * FROM work_items WHERE id=?", (key,))
         return self.decode(rows[0]) if rows else None

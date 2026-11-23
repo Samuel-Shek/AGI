@@ -29,6 +29,30 @@ class ProactiveTests(unittest.TestCase):
         result={'origin':p.POLICY,'identity':{'head':'a'*40},'hypothesis':{'contract':'text_blocks'},'rounds':[]}
         result.update(extra or {})
         return self.queue.update(row['id'],state,result=result)
+    def feedback_row(self):
+        # The feedback publisher now revalidates its real source and route.
+        # Keep that check intact rather than borrowing an unrelated proactive row.
+        from activity_mvp.feedback import autonomy, projects
+        from tests.personal_scope_fixtures import register_personal
+        register_personal(self,self.root,['owner-fixture'])
+        repository=self.root/'feedback-repository';repository.mkdir()
+        (repository/'package.json').write_text('{"name":"agi"}')
+        projects.git(repository,'init');projects.git(repository,'add','package.json')
+        projects.git(repository,'-c','user.name=Test','-c','user.email=test@localhost','commit','-m','fixture')
+        spec={**projects.PROJECTS['agi'],'repository':str(repository),'markers':('package.json',),'application':str(self.root/'PSI.app')}
+        binding=patch.dict(projects.PROJECTS,{'agi':spec});binding.start();self.addCleanup(binding.stop)
+        proof=self.root/'owner-fixture.jsonl'
+        proof.write_text(packed({'sessionId':'owner-fixture','role':'user','content':'synthetic owner registration'})+'\n')
+        self.store.conn.execute('INSERT INTO incidents(id,title,category,state,created,updated) VALUES(?,?,?,?,?,?)',('feedback','problem','execution','investigating',1,1))
+        self.store.conn.execute('INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?)',('owner-proof','fixture','owner-fixture',1,'synthetic owner registration','',packed({'path':str(proof),'offset':0,'sha256':digest(proof.read_text())}),'classified',1,0))
+        self.store.conn.execute('INSERT INTO quotes VALUES(?,?)',('owner-proof','feedback'))
+        self.store.set('project_bindings',{'feedback':{'authority':POLICY,'project_id':'agi','repository':str(repository)}})
+        autonomy.synchronize(self.store)
+        row=self.queue.get(digest(['feedback','feedback'])[:24])
+        self.assertEqual(row['routing']['handler'],'project_repair')
+        result={'job':'c'*24,'verification':{},'candidate':str(self.root),'work_revision':row['source_revision']}
+        self.store.conn.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?,?)',('c'*24,'feedback',1,'prepared',1,1,packed(result)))
+        return self.queue.update(row['id'],'ready',result=result)
     def test_pause_and_stop_prevent_admission(self):
         self.store.set('autonomy',{'policy':POLICY,'paused':True})
         self.assertFalse(p.ready(self.store)); self.assertEqual(p.process_one(self.store)['status'],'paused')
@@ -236,19 +260,26 @@ class ProactiveTests(unittest.TestCase):
             repair.ensure_trusted_baseline(repository,target,base)
         self.assertEqual((folder/'foreign-preserved/fixed.py').read_text(),'USER_CHANGE=1\n')
     def test_shared_publisher_does_not_exit_before_preflight(self):
-        row=self.row(extra={'job':'c'*24,'verification':{},'candidate':str(self.root)})
+        row=self.feedback_row()
         with patch.object(repair,'prepare_idle_exit') as exit_ui,patch.object(repair,'publish_candidate',return_value={'installed':False,'status':'deferred_t9'}):
             result=repair._publish_prepared(self.store,self.queue,row,self.root,{},'c'*24)
         exit_ui.assert_not_called();self.assertEqual(result['status'],'deferred_t9')
         self.assertEqual(self.queue.get(row['id'])['state'],'ready')
     def test_shared_publisher_waits_for_guard_acceptance_without_success_notice(self):
-        row=self.row(extra={'job':'c'*24,'verification':{},'candidate':str(self.root)})
+        row=self.feedback_row()
         with patch.object(repair,'publish_candidate',return_value={'installed':True}),patch.object(repair,'installation_ready',return_value=True),patch.object(acceptance,'continue_verified_release',return_value=False),patch.object(self.store,'notify') as notify:
             result=repair._publish_prepared(self.store,self.queue,row,self.root,{},'c'*24)
         self.assertEqual(result['status'],'acceptance_pending');notify.assert_not_called()
         self.assertEqual(self.queue.get(row['id'])['state'],'verifying')
+    def test_feedback_publisher_rejects_unrelated_proactive_row(self):
+        row=self.row(extra={'job':'c'*24,'verification':{},'candidate':str(self.root)})
+        with patch.object(repair,'publish_candidate') as publish,patch.object(self.store,'notify') as notify:
+            result=repair._publish_prepared(self.store,self.queue,row,self.root,{},'c'*24)
+        self.assertEqual(result['reason'],'current_work_required')
+        publish.assert_not_called();notify.assert_not_called()
+        self.assertEqual(self.queue.get(row['id']),row)
     def test_fixed_input_failure_is_not_a_user_incident(self):
-        app=self.root/'AGI.app';(app/'Contents').mkdir(parents=True)
+        app=self.root/'PSI.app';(app/'Contents').mkdir(parents=True)
         (app/'Contents/Info.plist').write_bytes(plistlib.dumps({'PAMGitRevision':'a'*12,'PAMCoreCodeHash':'fixture'}))
         with patch.dict(p.PROJECTS,{'agi':{'application':str(app)}}),patch('activity_mvp.feedback.release.core_hash',return_value='fixture'),patch.object(contracts,'inspect',return_value=['text_blocks']),patch.object(p.model,'invoke') as model:
             self.assertEqual(p.discover(self.store)['status'],'candidate')

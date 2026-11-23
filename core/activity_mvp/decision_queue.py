@@ -42,7 +42,7 @@ from .user_decisions import (
 
 PLAN_TTL_MINUTES = 10
 DEFAULT_LIMIT = 80
-PLAN_DIR_RELATIVE_PATH = Path("Library/Application Support/Personal AI Monitor/decision-queue-plans")
+PLAN_DIR_RELATIVE_PATH = Path("Library/Application Support/PSI/decision-queue-plans")
 FEEDBACK_FOLDER_SIDEBAR = "folder-sidebar"
 FEEDBACK_OLD_TASK = "old-task"
 FEEDBACK_REFERENCE = "reference-material"

@@ -1,9 +1,40 @@
 """Final delivery binds actual text, scope and current state; no raw text stored."""
 import hashlib
 import json
+import os
+import sys
+import tempfile
+import unittest
 from pathlib import Path
 from tests.test_task_closure import ClosureTests
-from activity_mvp.task_closure import final_wording
+from activity_mvp.task_closure import final_wording, read_delivery_file
+
+class DeliveryDirectoryTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == 'darwin' or hasattr(os, 'O_SEARCH'), 'search-only directory handles unavailable')
+    def test_authorized_file_can_be_read_through_search_only_parent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent=Path(directory).resolve()/'parent'; parent.mkdir()
+            scope=parent/'scope'; scope.mkdir()
+            result=scope/'result.txt'; result.write_bytes(b'authorized result')
+            parent.chmod(0o100)
+            try:
+                with self.assertRaises(PermissionError):os.listdir(parent)
+                self.assertEqual(read_delivery_file(result,scope),b'authorized result')
+                result.chmod(0)
+                with self.assertRaises(PermissionError):read_delivery_file(result,scope)
+            finally:
+                result.chmod(0o600); parent.chmod(0o700)
+
+    def test_directory_and_leaf_aliases_still_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory).resolve()
+            real=root/'real'; real.mkdir()
+            result=real/'result.txt'; result.write_bytes(b'authorized result')
+            (root/'directory-link').symlink_to(real,target_is_directory=True)
+            (real/'file-link').symlink_to(result)
+            for path in (root/'directory-link/result.txt',real/'file-link'):
+                with self.subTest(path=path),self.assertRaises(OSError):
+                    read_delivery_file(path,root)
 
 class WordingTests(ClosureTests):
     def final_audit(self, text='本次修复全部完成。', completion='complete', remaining=None, **extra):

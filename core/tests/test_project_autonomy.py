@@ -119,7 +119,7 @@ class ProjectAutonomyTests(unittest.TestCase):
         self.assertEqual((lock.read_bytes(),lock.stat().st_ino,lock.stat().st_mtime_ns),lock_before)
 
     def test_title_and_body_paths_do_not_grant_project(self):
-        item = {**self.incident, 'title':'AGI at '+self.specs['agi']['repository'], 'project':'agi'}
+        item = {**self.incident, 'title':'PSI at '+self.specs['agi']['repository'], 'project':'agi'}
         self.assertEqual(projects.resolve_project(self.store,item)['status'],'waiting_evidence')
 
     def test_owner_binding_checks_real_markers(self):
@@ -132,8 +132,8 @@ class ProjectAutonomyTests(unittest.TestCase):
 
     def test_current_owner_alias_selects_only_fixed_registered_product(self):
         source = self.root/'s.jsonl'
-        source.write_text(packed({'sessionId':'s','role':'user','content':'AGI 的文字显示错误'})+'\n')
-        self.store.conn.execute('INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?)', ('m','fixture','s',1,'AGI 的文字显示错误','', packed({'path':str(source)}),'classified',1,0))
+        source.write_text(packed({'sessionId':'s','role':'user','content':'PSI 的文字显示错误'})+'\n')
+        self.store.conn.execute('INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?)', ('m','fixture','s',1,'PSI 的文字显示错误','', packed({'path':str(source)}),'classified',1,0))
         self.store.conn.execute('INSERT INTO quotes VALUES(?,?)',('m','i'))
         with patch('activity_mvp.feedback.sources.reference_is_current',return_value=True):
             target=projects.resolve_project(self.store,self.incident)
@@ -253,8 +253,14 @@ class ProjectAutonomyTests(unittest.TestCase):
 
     def _prepared_publication(self):
         job='c'*24
-        queue=WorkQueue(self.store);item=queue.enqueue('feedback','i','v1','agi')
-        result={'job':job,'verification':{'base':'fixture'},'candidate':str(self.root),'work_revision':'v1'}
+        from activity_mvp.feedback import autonomy
+        from activity_mvp.feedback.store import digest
+        self.bind()
+        self.store.conn.execute('UPDATE messages SET reference=? WHERE id=?',
+            (packed({'path':str(self.owner_source),'offset':0,'sha256':digest(self.owner_source.read_text())}), 'owner-proof'))
+        autonomy.synchronize(self.store)
+        queue=WorkQueue(self.store);item=queue.get(digest(['feedback','i'])[:24])
+        result={'job':job,'verification':{'base':'fixture'},'candidate':str(self.root),'work_revision':item['source_revision']}
         queue.update(item['id'],'ready',result=result)
         self.store.conn.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?,?)', (job,'i',1,'prepared',1,1,packed(result)))
         self.store.reserve('repair')
@@ -276,6 +282,114 @@ class ProjectAutonomyTests(unittest.TestCase):
               patch.object(service.subprocess,'run') as external):
             service.tick(self.store.root,analyze=False,repair=False)
         external.assert_not_called()
+
+    def test_new_choice_blocks_prepared_publish_before_dispatch(self):
+        queue, item, job = self._prepared_publication()
+        before = self.store.rows('SELECT * FROM budget')
+        self.store.decision('i', {'reason':'需要本人选择', 'reason_code':'new_permission'})
+        with patch.object(repair, 'publish_candidate') as publish:
+            result = repair._publish_prepared(self.store, queue, queue.get(item['id']), self.root, {}, job)
+        self.assertEqual(result['reason'], 'current_work_required')
+        publish.assert_not_called()
+        self.assertEqual(queue.get(item['id'])['state'], 'human_required')
+        self.assertEqual(self.store.rows('SELECT * FROM budget'), before)
+        self.assertEqual(self.store.rows('SELECT state FROM jobs')[0]['state'], 'prepared')
+
+    def test_changed_source_blocks_prepared_publish_before_dispatch(self):
+        queue, item, job = self._prepared_publication()
+        self.owner_source.write_text('changed synthetic source\n')
+        with patch.object(repair, 'publish_candidate') as publish:
+            result = repair._publish_prepared(self.store, queue, queue.get(item['id']), self.root, {}, job)
+        self.assertEqual(result['reason'], 'current_work_required')
+        publish.assert_not_called()
+        self.assertEqual(queue.get(item['id'])['state'], 'queued')
+
+    def test_dismissed_item_blocks_preparation_and_new_budget_before_its_batch(self):
+        queue, item, job = self._prepared_publication()
+        self.store.conn.execute("UPDATE incidents SET state='dismissed' WHERE id='i'")
+        before = self.store.rows('SELECT * FROM budget')
+        with patch('activity_mvp.feedback.repair.stage_snapshot') as snapshot, patch.object(repair, 'publish_candidate') as publish:
+            result = repair.process_one(self.store)
+        self.assertEqual(result['reason'], 'current_work_required')
+        snapshot.assert_not_called(); publish.assert_not_called()
+        self.assertEqual(queue.get(item['id'])['state'], 'resolved')
+        self.assertEqual(self.store.rows('SELECT * FROM budget'), before)
+
+    def test_prepared_item_selection_avoids_full_queue_scan(self):
+        queue, item, job = self._prepared_publication()
+        with patch.object(WorkQueue, 'items', side_effect=AssertionError('full queue scan')), patch.object(repair, '_publish_prepared', return_value={'status':'synthetic'}) as publish:
+            self.assertEqual(repair.process_one(self.store)['status'], 'synthetic')
+        publish.assert_called_once()
+
+    def test_running_repair_choice_rechecked_before_model_dispatch(self):
+        from activity_mvp.feedback import model
+        queue, item, job = self._prepared_publication()
+        incident = self.store.rows("SELECT * FROM incidents WHERE id='i'")[0]
+        queue.update(item['id'], 'running')
+        before = queue.get(item['id'])
+        def dispatch(store, prompt, schema, **kwargs):
+            self.store.decision('i', {'reason':'synthetic new choice', 'reason_code':'preference'})
+            kwargs['dispatch_check']()
+            self.fail('new choice did not block model dispatch')
+        with patch.object(model, 'invoke', side_effect=dispatch):
+            with self.assertRaisesRegex(PermissionError, 'investigation_inputs_changed'):
+                repair.propose(self.store, item, incident, 'synthetic', self.root)
+        self.assertEqual(queue.get(item['id']), before)
+
+    def test_unknown_legacy_job_survives_new_answer_source_change_and_two_ticks(self):
+        from activity_mvp.feedback import autonomy, model
+        queue, item, job = self._prepared_publication()
+        original = {**queue.get(item['id'])['result'], 'reason':'interrupted_outcome_requires_reconciliation'}
+        queue.update(item['id'], 'waiting_evidence', result=original)
+        decision = self.store.decision('i', {'reason':'synthetic followup'})
+        self.store.choose(decision, 1, 'investigate')
+        before_budget = self.store.rows('SELECT * FROM budget')
+        with patch.object(model, 'invoke') as invoke, patch.object(repair, 'publish_candidate') as publish, patch.object(repair, 'propose') as propose:
+            for version in ('changed-one', 'changed-two'):
+                with patch.object(autonomy, 'version', return_value=version):
+                    autonomy.synchronize(self.store)
+                    self.assertEqual(model.investigate_requested(self.store)['processed'], 0)
+                    self.assertEqual(autonomy.investigate(self.store)['processed'], 0)
+                    self.assertEqual(repair.process_one(self.store)['status'], 'waiting_evidence')
+                current = queue.get(item['id'])
+                self.assertEqual(current['source_revision'], item['source_revision'])
+                self.assertEqual(current['result'], original)
+                self.assertEqual(current['state'], 'waiting_evidence')
+            invoke.assert_not_called(); publish.assert_not_called(); propose.assert_not_called()
+        self.assertEqual(self.store.get('investigate_requests'), ['i'])
+        self.assertEqual(self.store.rows('SELECT * FROM budget'), before_budget)
+
+    def test_legacy_unknown_reason_blocks_direct_prepared_publish(self):
+        queue, item, job = self._prepared_publication()
+        result = {**queue.get(item['id'])['result'], 'reason':'interrupted_outcome_requires_reconciliation'}
+        queue.update(item['id'], 'ready', result=result)
+        before = queue.get(item['id'])
+        with patch.object(repair, 'publish_candidate') as publish:
+            outcome = repair._publish_prepared(self.store, queue, before, self.root, {}, job)
+        self.assertEqual(outcome['reason'], 'publication_outcome_requires_reconciliation')
+        publish.assert_not_called()
+        self.assertEqual(queue.get(item['id']), before)
+
+    def test_late_accepted_receipt_releases_sticky_unknown_for_new_source(self):
+        from activity_mvp.feedback import autonomy
+        queue, item, job = self._prepared_publication()
+        result = {**queue.get(item['id'])['result'], 'reason':'interrupted_outcome_requires_reconciliation'}
+        queue.update(item['id'], 'waiting_evidence', result=result)
+        receipt = self.root/'synthetic-installation.json'
+        receipt.write_text(packed({'job':job,'installed':True}))
+        with patch.object(repair, 'installation_receipt_path', return_value=receipt), patch.object(repair, 'installation_ready', return_value=True), patch('activity_mvp.feedback.acceptance.continue_verified_release', return_value=True), patch.object(repair, 'publish_candidate') as publish:
+            self.assertEqual(repair.process_one(self.store)['status'], 'reconciled')
+        publish.assert_not_called()
+        current = queue.get(item['id'])
+        self.assertEqual(current['state'], 'observing')
+        self.assertFalse(autonomy.requires_reconciliation(current))
+        self.assertEqual(current['result']['job'], job)
+        with patch.object(autonomy, 'version', return_value='new-source-version'):
+            autonomy.synchronize(self.store)
+        current = queue.get(item['id'])
+        self.assertEqual(current['state'], 'queued')
+        self.assertEqual(current['source_revision'], 'new-source-version')
+        self.assertFalse(autonomy.requires_reconciliation(current))
 
     def test_busy_app_defers_without_deploy_or_new_budget(self):
         queue,item,job=self._prepared_publication()

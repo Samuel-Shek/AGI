@@ -825,7 +825,7 @@ def _verify_remote_ci(config: RolloutConfig) -> dict[str, Any]:
     required_names = {
         "core",
         "Swift tests (Xcode 15.4)",
-        "Swift tests (Xcode 16.4)",
+        "Swift tests (Xcode 16.2)",
         "app-build",
     }
     if not required_names.issubset(names):

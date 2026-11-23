@@ -292,7 +292,7 @@ def create_ai_connector_server(db_path: str | Path, host: str = DEFAULT_AI_CONNE
 def serve_ai_connector(db_path: str | Path, host: str = DEFAULT_AI_CONNECTOR_HOST, port: int = DEFAULT_AI_CONNECTOR_PORT) -> None:
     httpd = create_ai_connector_server(db_path, host, port)
     actual_host, actual_port = httpd.server_address
-    print(f"AGI read-only AI connector: http://{actual_host}:{actual_port}")
+    print(f"PSI read-only AI connector: http://{actual_host}:{actual_port}")
     httpd.serve_forever()
 
 

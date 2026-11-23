@@ -4,6 +4,17 @@ from core_fixture import *
 class CoreNetworkTests(CoreFixture):
     def setUp(self):
         super().setUp()
+        # These tests address only their own loopback servers. macOS proxy
+        # discovery must not route synthetic requests into a user's proxy.
+        from urllib.parse import urlsplit
+        direct = request.build_opener(request.ProxyHandler({}))
+        def loopback_urlopen(url, *args, **kwargs):
+            target = url.full_url if isinstance(url, request.Request) else url
+            if urlsplit(target).hostname not in {'127.0.0.1', 'localhost', '::1'}:
+                raise AssertionError('network fixture permits only loopback')
+            return direct.open(url, *args, **kwargs)
+        client = patch.object(request, 'urlopen', side_effect=loopback_urlopen)
+        client.start(); self.addCleanup(client.stop)
         if self._testMethodName == 'test_ai_connector_managed_start_stop_and_pid_safety':
             # Real connector process and original assertions; the child gets
             # only unchanged code and cannot import either editable leaf.
@@ -19,6 +30,36 @@ class CoreNetworkTests(CoreFixture):
             location.start(); self.addCleanup(location.stop)
             environment = patch.dict(os.environ, {'PYTHONPATH':'', 'PYTHONNOUSERSITE':'1', 'PYTHONSAFEPATH':'1'})
             environment.start(); self.addCleanup(environment.stop)
+
+    def test_loopback_fixture_stays_local_with_a_host_proxy(self) -> None:
+        from http.server import BaseHTTPRequestHandler
+        hits = []
+        class SyntheticProxy(BaseHTTPRequestHandler):
+            def do_GET(self):
+                hits.append(True)
+                self.send_response(503); self.end_headers()
+            def log_message(self, *args): pass
+        proxy = ThreadingHTTPServer(('127.0.0.1', 0), SyntheticProxy)
+        proxy_thread = threading.Thread(target=proxy.serve_forever, daemon=True)
+        proxy_thread.start()
+        server = create_ai_connector_server(self.root / 'activity.sqlite', port=0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = f'http://127.0.0.1:{server.server_port}/status'
+            with patch.object(request, 'getproxies', return_value={'http':f'http://127.0.0.1:{proxy.server_port}'}), patch.object(request, 'proxy_bypass', return_value=False):
+                with self.assertRaises(error.HTTPError) as caught:
+                    request.build_opener().open(url, timeout=5)
+                self.assertEqual(caught.exception.code, 503); caught.exception.close()
+                self.assertEqual(hits, [True])
+                with request.urlopen(url, timeout=5) as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(json.loads(response.read())['interface'], 'ai-connector')
+                self.assertEqual(hits, [True])
+        finally:
+            server.shutdown(); server.server_close(); thread.join(timeout=5)
+            proxy.shutdown(); proxy.server_close(); proxy_thread.join(timeout=5)
+        self.assertFalse(thread.is_alive()); self.assertFalse(proxy_thread.is_alive())
 
     def test_capture_now_api_respects_pause(self) -> None:
         pause(self.conn, minutes=15)

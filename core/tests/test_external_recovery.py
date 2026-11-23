@@ -6,13 +6,20 @@ from activity_mvp.feedback import autonomy,project_repair,release,recovery_stora
 from activity_mvp.feedback.store import Store,packed,atomic,private_directory
 import plistlib
 
+def require_backup_manager(test):
+    """The copier lives in the owner's private backup-governance tree, not this repo."""
+    try:
+        return storage.backend()
+    except storage.RecoveryDeferred as exc:
+        test.skipTest("private backup manager is not installed: " + str(exc))
+
 class ExternalRecoveryTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.root=Path(self.tmp.name).resolve();self.local=self.root/'metadata';self.external=self.root/'external';self.external.mkdir()
-        self.b=storage.backend();self.b.MOUNT=self.external;self.b.ROOT=self.root/'copier-state'
+        self.b=require_backup_manager(self);self.b.MOUNT=self.external;self.b.ROOT=self.root/'copier-state'
         self.bound={'uuid':self.b.UUID,'mount':str(self.external),'device':self.external.stat().st_dev}
-        self.app=self.root/'AGI.app';self.app.mkdir();(self.app/'binary').write_bytes(b'old signed fixture')
+        self.app=self.root/'PSI.app';self.app.mkdir();(self.app/'binary').write_bytes(b'old signed fixture')
         self.code=self.root/'old.py';self.code.write_text('old code')
         self.before={'revision':'before','core_hash':'oldhash','job':'test'}
         for obj,name,value in [(storage,'backend',self.b),(self.b,'volume',self.bound),(self.b,'verify_apps',None),(os.path,'ismount',True)]:
@@ -64,12 +71,12 @@ class ExternalRecoveryTests(unittest.TestCase):
 class PublicationInterruptionTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.root=Path(self.tmp.name).resolve()
-        self.live=self.root/'live';self.candidate=self.root/'candidate';self.app=self.root/'AGI.app';self.app.mkdir()
+        self.live=self.root/'live';self.candidate=self.root/'candidate';self.app=self.root/'PSI.app';self.app.mkdir()
         for base in [self.live,self.candidate/'core']:
             for name in release.FOLDERS:(base/name).mkdir(parents=True)
             for name in release.FILES:(base/name).write_text('unchanged')
         self.rel='activity_mvp/code.py';(self.live/self.rel).write_text('old code');(self.candidate/'core'/self.rel).write_text('new code')
-        (self.app/'old').write_text('old app');new=self.candidate/'build/AGI.app';new.mkdir(parents=True);(new/'new').write_text('new app')
+        (self.app/'old').write_text('old app');new=self.candidate/'build/PSI.app';new.mkdir(parents=True);(new/'new').write_text('new app')
         self.data=self.live/'data/current.txt';self.data.parent.mkdir();self.data.write_text('later user data')
         self.journal=self.root/'metadata/exchange.json';self.recovery=self.root/'offline-t9';self.recovery.mkdir()
     def test_unplug_after_app_exchange_rolls_back_without_external_read(self):
@@ -93,7 +100,7 @@ def kill(left,right):
  real(left,right);count[0]+=1
  if count[0]==int(sys.argv[2]):os._exit(77)
 release._swap=kill
-release.exchange_pair(root/'candidate',root/'live',root/'AGI.app',root/'offline-t9',['activity_mvp/code.py'],release.core_hash(root/'candidate/core'),lambda:None,journal=root/'metadata/exchange.json')
+release.exchange_pair(root/'candidate',root/'live',root/'PSI.app',root/'offline-t9',['activity_mvp/code.py'],release.core_hash(root/'candidate/core'),lambda:None,journal=root/'metadata/exchange.json')
 '''
                 p=subprocess.run([sys.executable,'-B','-c',script,str(self.root),str(kill_after)],capture_output=True,text=True)
                 self.assertEqual(p.returncode,77,p.stderr);release.recover_exchange(self.journal,self.live,self.app)
@@ -101,7 +108,7 @@ release.exchange_pair(root/'candidate',root/'live',root/'AGI.app',root/'offline-
                 # Derived candidate stages are deliberately not a second old
                 # backup; remove this test's staged candidates between cases.
                 import shutil
-                for stage in self.root.glob('.AGI-*'):shutil.rmtree(stage)
+                for stage in self.root.glob('.PSI-*'):shutil.rmtree(stage)
                 self.journal.unlink()
     def test_git_commit_then_receipt_failure_keeps_pair_and_resumes_once(self):
         repo=self.root/'repo';repo.mkdir()
@@ -120,6 +127,17 @@ release.exchange_pair(root/'candidate',root/'live',root/'AGI.app',root/'offline-
             commit=lambda:self.fail('committed retry must not rerun commit'),commit_info=binding)
         self.assertTrue(result['resumed']);self.assertTrue(result['original_cleanup_complete']);self.assertEqual(self.data.read_text(),'data after commit')
 
+    def test_application_reopened_after_staging_prevents_exchange(self):
+        old=release._token(self.live/self.rel); app=release._token(self.app); calls=[]
+        def guard():
+            calls.append(1)
+            if len(calls) > 1: raise PermissionError('application_reopened_before_exchange')
+        with self.assertRaisesRegex(PermissionError, 'application_reopened_before_exchange'):
+            release.exchange_pair(self.candidate,self.live,self.app,self.recovery,[self.rel],release.core_hash(self.candidate/'core'),lambda:None,guard,self.journal)
+        self.assertEqual(release._token(self.live/self.rel),old)
+        self.assertEqual(release._token(self.app),app)
+        self.assertEqual(self.data.read_text(),'later user data')
+
     def test_pause_before_swap_preserves_pair(self):
         old=release._token(self.live/self.rel);app=release._token(self.app)
         with self.assertRaisesRegex(PermissionError,'paused'):
@@ -137,7 +155,7 @@ release.exchange_pair(root/'candidate',root/'live',root/'AGI.app',root/'offline-
 
 class PublicationEntryTests(unittest.TestCase):
     def setUp(self):
-        PublicationInterruptionTests.setUp(self);self.b=storage.backend();self.b.MOUNT=self.root/'external';self.b.MOUNT.mkdir();self.b.ROOT=self.root/'backup-state'
+        PublicationInterruptionTests.setUp(self);self.b=require_backup_manager(self);self.b.MOUNT=self.root/'external';self.b.MOUNT.mkdir();self.b.ROOT=self.root/'backup-state'
         self.bound={'uuid':self.b.UUID,'mount':str(self.b.MOUNT),'device':self.b.MOUNT.stat().st_dev}
         for obj,name,value in [(storage,'backend',self.b),(self.b,'volume',self.bound),(self.b,'verify_apps',None),(os.path,'ismount',True)]:
             p=patch.object(obj,name,return_value=value);p.start();self.addCleanup(p.stop)
@@ -147,7 +165,7 @@ class PublicationEntryTests(unittest.TestCase):
         (self.repo/'source').write_text('old');git('add','source');git('commit','-m','old');self.base=git('rev-parse','HEAD')
         (self.repo/'source').write_text('new');git('commit','-am','new');self.revision=git('rev-parse','HEAD');git('reset','--hard',self.base)
         self.expected=release.core_hash(self.candidate/'core')
-        for app,revision,core in [(self.app,self.base,release.core_hash(self.live)),(self.candidate/'build/AGI.app',self.revision,self.expected)]:
+        for app,revision,core in [(self.app,self.base,release.core_hash(self.live)),(self.candidate/'build/PSI.app',self.revision,self.expected)]:
             (app/'Contents').mkdir();(app/'Contents/Info.plist').write_bytes(plistlib.dumps({'PAMCoreCodeHash':core,'PAMGitRevision':revision[:7],'PAMGitDirty':False}))
         self.metadata=self.live/'data/feedback'
         with Store(self.metadata) as s:
@@ -156,8 +174,8 @@ class PublicationEntryTests(unittest.TestCase):
         def writer(payload,copy,guard):copy(self.live/self.rel,payload/self.rel);return {}
         self.external,self.local=storage.prepare_external(self.metadata,'entry',self.app,before,writer)
         self.journal=self.local.with_suffix('.exchange.json');self.request=private_directory(self.metadata/'publication-requests')/'entry.json'
-        verified={'revision':self.revision,'core_hash':self.expected,'application_identity':self.b.tree_identity(self.candidate/'build/AGI.app'),
-                  'application_manifest_sha256':self.b.fingerprint(self.b.manifest(self.candidate/'build/AGI.app'))}
+        verified={'revision':self.revision,'core_hash':self.expected,'application_identity':self.b.tree_identity(self.candidate/'build/PSI.app'),
+                  'application_manifest_sha256':self.b.fingerprint(self.b.manifest(self.candidate/'build/PSI.app'))}
         self.r={'config':{'repository':str(self.repo),'live_core':str(self.live),'application':str(self.app)},'candidate':str(self.candidate),
                 'recovery':str(self.external),'local_receipt':str(self.local),'base':self.base,'verification':verified,'service_was_loaded':True}
         atomic(self.request,packed(self.r));self.boot_fail=False
@@ -373,7 +391,7 @@ release.exchange_pair(Path(r['candidate']),Path(r['config']['live_core']),Path(r
         self.assertFalse((self.local.parent/(self.local.stem+'.rollback-history')).exists())
         self.assertFalse(self.local.with_suffix('.installed.json').exists())
     def test_candidate_replaced_by_other_signed_app_is_rejected_before_swap(self):
-        old=release._token(self.live/self.rel);(self.candidate/'build/AGI.app/new').write_text('other signed app')
+        old=release._token(self.live/self.rel);(self.candidate/'build/PSI.app/new').write_text('other signed app')
         with self.assertRaisesRegex(ValueError,'candidate_application_changed'):release.standalone_publish(self.request)
         self.assertEqual(release._token(self.live/self.rel),old);self.assertTrue((self.app/'old').exists())
 
@@ -433,7 +451,7 @@ class PublicationPostbootTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'postboot_committed_identity_changed'):self.retry_known_rollback()
         self.assertEqual(self.realrun(['git','rev-parse','HEAD'],self.repo).stdout.strip(),self.revision)
     def test_postboot_replaced_same_content_candidate_is_rejected(self):
-        self.previous_boot();target=self.candidate/'build/AGI.app/new'
+        self.previous_boot();target=self.candidate/'build/PSI.app/new'
         import shutil
         other=target.with_suffix('.replacement');shutil.copy2(target,other);os.replace(other,target)
         with self.assertRaisesRegex(ValueError,'postboot_candidate_changed'):self.retry_known_rollback()
@@ -544,8 +562,8 @@ class PublicationPostbootTests(unittest.TestCase):
 class PublicationCoordinatorTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.root=Path(self.tmp.name).resolve()
-        self.home=self.root/'home';self.live=self.home/'Library/Application Support/Personal AI Monitor/core'
-        self.app=Path('/Applications/AGI.app');self.candidate=self.root/'candidate';self.base='a'*40
+        self.home=self.root/'home';self.live=self.home/'Library/Application Support/PSI/core'
+        self.app=Path('/Applications/PSI.app');self.candidate=self.root/'candidate';self.base='a'*40
         self.store=self.enterContext(Store(self.root/'feedback'))
         self.store.set('config',{'enabled':True,'repository':str(self.root/'repo'),'live_core':str(self.live),'application':str(self.app),'python':sys.executable})
         self.store.set('autonomy',{'policy':autonomy.POLICY,'paused':False})

@@ -14,14 +14,14 @@ EXTERNAL_ADAPTERS = {'workplace-sync-center': {'module':'sync_center', 'policy':
 
 ROOT = Path.home()/'Code/active'
 PROJECTS = {
-    'agi': {'repository': str(ROOT/'artificial-general-intelligence'), 'application': '/Applications/AGI.app',
-            'bundle_id': 'app.personalai.monitor', 'markers': ('core/pyproject.toml', 'scripts/build-macos-app.sh'),
+    'agi': {'repository': str(ROOT/'artificial-general-intelligence'), 'application': '/Applications/PSI.app',
+            'bundle_id': 'app.psi', 'markers': ('core/pyproject.toml', 'scripts/build-macos-app.sh'),
             'editable': ('core/activity_mvp/feedback/sources.py', 'core/activity_mvp/feedback/journal.py',
                          'apps/PersonalAIMonitorMenuBar/Sources/PersonalAIMonitorMenuBar/FeedbackView.swift',
                          'apps/PersonalAIMonitorMenuBar/Sources/PersonalAIMonitorMenuBar/EvolutionView.swift'),
             'regression': 'core/tests/test_project_candidate_regression.py'},
     'meeting-assistant': {'repository': str(ROOT/'meeting-assistant'), 'application': '/Applications/Meeting Assistant.app',
-            'bundle_id': 'com.bigking.mianshi-assistant', 'markers': ('package.json', 'scripts/install-macos.sh'),
+            'bundle_id': 'com.exampleuser.interview-assistant', 'markers': ('package.json', 'scripts/install-macos.sh'),
             'editable': ('src/subtitle.css', 'src/utils/attachmentText.js', 'src/utils/recognitionRouteNotice.mjs'),
             'regression': 'scripts/tests/project-candidate-regression.test.js'},
 }
@@ -156,7 +156,7 @@ def resolve_project(store, incident):
         # complaint can select one of those identities, never register a new path.
         from .sources import reference_is_current
         rows = store.rows('SELECT m.* FROM messages m JOIN quotes q ON q.message_id=m.id WHERE q.incident_id=?', (incident['id'],))
-        aliases = {'agi': r'(?<![\w])AGI(?![\w])|Personal AI Monitor',
+        aliases = {'agi': r'(?<![\w])(?:PSI|AGI)(?![\w])|Personal AI Monitor',
                    'meeting-assistant': r'Meeting Assistant|会议助手|面试助手'}
         for row in rows:
             if not reference_is_current(row): continue

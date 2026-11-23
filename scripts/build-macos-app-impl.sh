@@ -152,8 +152,8 @@ elif [[ -n "${DEVELOPER_DIR-}" ]]; then
   fi
 fi
 
-APP_DIR="$ROOT_DIR/build/AGI.app"
-STAGING_APP_DIR="$ROOT_DIR/build/.AGI.app.staging.$$"
+APP_DIR="$ROOT_DIR/build/PSI.app"
+STAGING_APP_DIR="$ROOT_DIR/build/.PSI.app.staging.$$"
 SWIFT_DIR="$ROOT_DIR/apps/PersonalAIMonitorMenuBar"
 ICNS_FILE="$ROOT_DIR/build/AppIcon.icns"
 MARKETING_VERSION="0.9.1"
@@ -387,7 +387,7 @@ assert_worktree_matches_commit() {
     -c core.fsmonitor=false \
     -c core.untrackedCache=false \
     status --porcelain=v1 --untracked-files=all --ignored=matching -- \
-    apps/PersonalAIMonitorMenuBar tools/generate_app_icon.swift)" \
+    apps/PersonalAIMonitorMenuBar apps/PSISyncCenter tools/generate_app_icon.swift)" \
      || [[ -n "$input_extras" ]]; then
     echo "Refusing release build: build inputs contain extra files." >&2
     return 1
@@ -538,10 +538,30 @@ fi
 /bin/mkdir -p "$STAGING_APP_DIR/Contents/MacOS" "$STAGING_APP_DIR/Contents/Resources"
 /bin/chmod 755 "$STAGING_APP_DIR" "$STAGING_APP_DIR/Contents" \
   "$STAGING_APP_DIR/Contents/MacOS" "$STAGING_APP_DIR/Contents/Resources"
-/bin/cp "$EXECUTABLE" "$STAGING_APP_DIR/Contents/MacOS/PersonalAIMonitor"
+/bin/cp "$EXECUTABLE" "$STAGING_APP_DIR/Contents/MacOS/PSI"
 /bin/cp "$ICNS_FILE" "$STAGING_APP_DIR/Contents/Resources/AppIcon.icns"
-/bin/chmod 755 "$STAGING_APP_DIR/Contents/MacOS/PersonalAIMonitor"
+/bin/chmod 755 "$STAGING_APP_DIR/Contents/MacOS/PSI"
 /bin/chmod 644 "$STAGING_APP_DIR/Contents/Resources/AppIcon.icns"
+# 事项工作台：只打包已提交的服务与页面文件（不含 tests/docs/macos）。
+WORKBENCH_DST="$STAGING_APP_DIR/Contents/Resources/workbench"
+/bin/mkdir -p "$WORKBENCH_DST"
+WORKBENCH_COUNT=0
+while IFS= read -r -d '' rel; do
+  case "$rel" in
+    apps/PSISyncCenter/psi_sync_center.py|apps/PSISyncCenter/psi_sync/*.py|apps/PSISyncCenter/static/*) ;;
+    *) continue ;;
+  esac
+  dest="$WORKBENCH_DST/${rel#apps/PSISyncCenter/}"
+  /bin/mkdir -p "$(/usr/bin/dirname "$dest")"
+  /bin/cp "$ROOT_DIR/$rel" "$dest"
+  /bin/chmod 644 "$dest"
+  WORKBENCH_COUNT=$((WORKBENCH_COUNT + 1))
+done < <(/usr/bin/git -C "$ROOT_DIR" ls-tree -r -z --name-only --full-tree "$GIT_FULL_REVISION" -- apps/PSISyncCenter)
+if [[ "$WORKBENCH_COUNT" -eq 0 || ! -f "$WORKBENCH_DST/psi_sync_center.py" ]]; then
+  echo "Refusing to package: workbench sources are missing from the commit." >&2
+  exit 3
+fi
+/usr/bin/find "$WORKBENCH_DST" -type d -exec /bin/chmod 755 {} +
 
 /bin/cat > "$STAGING_APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -550,13 +570,13 @@ fi
 <plist version="1.0">
 <dict>
   <key>CFBundleExecutable</key>
-  <string>PersonalAIMonitor</string>
+  <string>PSI</string>
   <key>CFBundleIdentifier</key>
-  <string>app.personalai.monitor</string>
+  <string>app.psi</string>
   <key>CFBundleName</key>
-  <string>AGI</string>
+  <string>PSI</string>
   <key>CFBundleDisplayName</key>
-  <string>AGI</string>
+  <string>PSI</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleIconFile</key>
@@ -586,9 +606,11 @@ fi
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
   <key>NSScreenCaptureUsageDescription</key>
-  <string>AGI captures local keyframes from your own Mac to build a private, searchable activity timeline.</string>
+  <string>PSI captures local keyframes from your own Mac to build a private, searchable activity timeline.</string>
   <key>NSAppleEventsUsageDescription</key>
-  <string>AGI may ask browsers for the active URL to improve local context attribution.</string>
+  <string>PSI may ask browsers for the active URL to improve local context attribution.</string>
+  <key>NSAppTransportSecurity</key>
+  <dict><key>NSAllowsLocalNetworking</key><true/></dict>
 </dict>
 </plist>
 PLIST

@@ -43,6 +43,211 @@ class AutonomousWorkflowTests(unittest.TestCase):
                 'next_action':'等待具体项目或新的相关依据。', 'evidence_gap':'尚未定位软件故障。',
                 'lesson_id':'', 'human_reason':'', 'alternatives':[], **extra}
 
+    def add_issues(self, count):
+        now = time.time()
+        original = self.store.rows("SELECT * FROM messages LIMIT 1")[0]
+        for index in range(count):
+            ident = 'issue-%03d' % index
+            self.store.conn.execute("INSERT INTO incidents(id,title,category,state,created,updated) VALUES(?, 'synthetic', 'evidence', 'investigating', ?, ?)", (ident, now, now))
+            self.store.conn.execute('INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?)',
+                (ident, original['source_id'], original['session'], now, 'synthetic', '', original['reference'], 'classified', now, 0))
+            self.store.conn.execute('INSERT INTO quotes VALUES(?,?)', (ident, ident))
+
+    def test_large_history_rotates_without_loading_the_whole_work_queue(self):
+        self.add_issues(75)
+        with patch.object(WorkQueue, 'items', side_effect=AssertionError('full queue scan')):
+            first = autonomy.synchronize(self.store)
+            second = autonomy.synchronize(self.store)
+        self.assertEqual(first['checked'], 64)
+        self.assertEqual(first['status'], 'backfill')
+        self.assertLessEqual(second['checked'], 64)
+        self.assertEqual(len(self.queue.items()), 76)
+        self.assertNotIn('synthetic', packed(self.store.get('autonomy_sync_result')))
+
+    def test_slow_batch_yields_then_continues_after_completed_item(self):
+        from activity_mvp import local_checks as checks
+        self.add_issues(2)
+        clock = [0.0]
+        real = autonomy._synchronize_one
+        seen = []
+        def slow(store, queue, ident):
+            row = real(store, queue, ident)
+            seen.append(ident)
+            clock[0] += 21
+            return row
+        with patch.object(checks.time, 'monotonic', side_effect=lambda: clock[0]), patch.object(autonomy, '_synchronize_one', side_effect=slow):
+            self.assertEqual(autonomy.synchronize(self.store)['checked'], 1)
+            clock[0] = 0
+            self.assertEqual(autonomy.synchronize(self.store)['checked'], 1)
+        self.assertEqual(seen, ['issue', 'issue-000'])
+
+    def test_timed_out_item_does_not_starve_the_next_item(self):
+        from activity_mvp import local_checks as checks
+        self.add_issues(1)
+        with patch.object(autonomy, '_synchronize_one', side_effect=checks.LocalCheckTimeout('autonomy')):
+            result = autonomy.synchronize(self.store)
+        self.assertEqual(result['reason'], 'local_check_timeout')
+        self.assertEqual(self.store.get('autonomy_sync_after'), 'issue')
+        with patch.object(autonomy, 'SYNC_LIMIT', 1):
+            result = autonomy.synchronize(self.store)
+        self.assertEqual(result['checked'], 1)
+        self.assertEqual(self.store.get('autonomy_sync_after'), 'issue-000')
+        self.assertEqual(self.queue.items()[0]['reference'], 'issue-000')
+
+    def test_denied_raw_candidate_is_not_admitted_by_its_identifier(self):
+        self.store.conn.execute("UPDATE messages SET session='unregistered'")
+        with patch.object(autonomy, 'binding', side_effect=AssertionError('source guard skipped')):
+            result = autonomy.synchronize(self.store)
+        self.assertEqual(result['checked'], 1)
+        self.assertEqual(result['synchronized'], 0)
+        self.assertEqual(self.queue.items(), [])
+
+    def test_choice_added_outside_batch_blocks_before_model_dispatch(self):
+        self.item()
+        self.store.decision('issue', {'reason':'需要本人选择', 'reason_code':'preference'})
+        with patch.object(model, 'invoke') as invoke:
+            self.assertEqual(autonomy.investigate(self.store)['processed'], 0)
+        invoke.assert_not_called()
+        self.assertEqual(self.queue.items()[0]['state'], 'human_required')
+
+    def test_choice_arriving_after_preparation_is_rejected_by_dispatch_check(self):
+        self.item()
+        def before_dispatch(store, prompt, schema, **kwargs):
+            self.store.decision('issue', {'reason':'需要本人选择', 'reason_code':'preference'})
+            kwargs['admission_check']()
+            self.fail('dispatch admitted after a new choice')
+        with patch.object(model, 'invoke', side_effect=before_dispatch):
+            with self.assertRaisesRegex(PermissionError, 'investigation_inputs_changed'):
+                autonomy.investigate(self.store)
+        self.assertEqual(self.store.rows("SELECT state FROM decisions")[0]['state'], 'pending')
+
+    def test_explicit_request_outside_batch_is_prepared_and_only_completed_request_consumed(self):
+        self.add_issues(70)
+        requested = 'issue-069'
+        self.store.set('investigate_requests', [requested, 'missing-retained'])
+        def response(store, prompt, schema, **kwargs):
+            work = self.queue.get(digest(['feedback', requested])[:24])
+            self.assertIsNotNone(work)
+            self.store.set('investigate_requests', [requested, 'missing-retained', 'arrived-during-call'])
+            return {'items':[{'id':work['id'], 'disposition':'wait', 'summary':'已核对',
+                'next_action':'等待依据', 'evidence_gap':'尚未定位', 'lesson_id':'',
+                'human_reason':'', 'alternatives':[]}]}, 'synthetic'
+        with patch.object(model, 'invoke', side_effect=response):
+            result = model.investigate_requested(self.store)
+        self.assertEqual(result['processed'], 1)
+        self.assertEqual(self.store.get('investigate_requests'), ['missing-retained', 'arrived-during-call'])
+
+    def test_explicit_request_cannot_clear_or_override_a_pending_choice(self):
+        self.store.decision('issue', {'reason':'需要本人选择', 'reason_code':'payment'})
+        self.store.set('investigate_requests', ['issue'])
+        with patch.object(model, 'invoke') as invoke:
+            self.assertEqual(model.investigate_requested(self.store)['processed'], 0)
+        invoke.assert_not_called()
+        self.assertEqual(self.store.get('investigate_requests'), ['issue'])
+        self.assertEqual(self.queue.items()[0]['state'], 'human_required')
+
+    def test_blocked_request_prefix_does_not_starve_a_later_valid_request(self):
+        self.store.set('investigate_requests', ['missing-%s' % n for n in range(5)] + ['issue'])
+        with patch.object(model, 'invoke') as invoke:
+            self.assertEqual(model.investigate_requested(self.store)['processed'], 0)
+        invoke.assert_not_called()
+        item = self.item()
+        with patch.object(model, 'invoke', return_value=({'items': [item]}, 'synthetic')):
+            self.assertEqual(model.investigate_requested(self.store)['processed'], 1)
+        self.assertEqual(self.store.get('investigate_requests'), ['missing-%s' % n for n in range(5)])
+
+    def test_new_choice_does_not_displace_unknown_publication_receipt_path(self):
+        item = self.item()
+        for state in ('running', 'verifying'):
+            for change in ('choice', 'dismissed'):
+                with self.subTest(state=state, change=change):
+                    self.queue.update(item['id'], state, result={'job':'c'*24, 'unknown':True})
+                    before = self.queue.get(item['id'])
+                    if change == 'choice':
+                        self.store.decision('issue', {'reason':'需要本人选择', 'reason_code':'preference'})
+                    else:
+                        self.store.conn.execute("UPDATE incidents SET state='dismissed' WHERE id='issue'")
+                    autonomy.synchronize(self.store)
+                    self.assertEqual(self.queue.get(item['id']), before)
+
+    def test_same_incident_new_answer_after_model_result_keeps_request(self):
+        self.store.set('investigate_requests', ['issue'])
+        original = autonomy.investigate
+        item = self.item()
+        def complete_then_answer(store, **kwargs):
+            result = original(store, **kwargs)
+            decision = self.store.decision('issue', {'reason':'synthetic new choice'})
+            self.store.choose(decision, 1, 'investigate')
+            return result
+        with patch.object(model, 'invoke', return_value=({'items':[item]}, 'synthetic')), patch.object(autonomy, 'investigate', side_effect=complete_then_answer):
+            self.assertEqual(model.investigate_requested(self.store)['processed'], 1)
+        self.assertEqual(self.store.get('investigate_requests'), ['issue'])
+
+    def test_slow_explicit_requests_yield_a_prepared_item_to_analysis(self):
+        from activity_mvp import local_checks as checks
+        self.add_issues(4)
+        self.store.set('investigate_requests', ['issue']+['issue-%03d' % n for n in range(4)])
+        clock = [0.0]
+        refresh = autonomy._refresh_work
+        def slow(*args):
+            result = refresh(*args)
+            clock[0] += 21
+            return result
+        def response(store, prompt, schema, **kwargs):
+            inputs = json.loads(prompt.split('\n')[-1])['work']
+            self.assertEqual(len(inputs), 1)
+            return {'items':[{'id':inputs[0]['id'], 'disposition':'wait', 'summary':'已核对',
+                'next_action':'等待依据', 'evidence_gap':'尚未定位', 'lesson_id':'',
+                'human_reason':'', 'alternatives':[]}]}, 'synthetic'
+        with patch.object(checks.time, 'monotonic', side_effect=lambda:clock[0]), patch.object(autonomy, '_refresh_work', side_effect=slow), patch.object(model, 'invoke', side_effect=response) as invoke:
+            self.assertEqual(model.investigate_requested(self.store)['processed'], 1)
+        invoke.assert_called_once()
+        self.assertEqual(self.store.get('investigate_requests'), ['issue-%03d' % n for n in range(4)])
+
+    def test_generic_investigation_rotates_past_blocked_prefix_without_full_queue(self):
+        self.add_issues(5)
+        autonomy.synchronize(self.store)
+        ordered = sorted(self.queue.items(), key=lambda row: row['id'])
+        for work in ordered[:5]:
+            self.store.decision(work['reference'], {'reason':'synthetic choice', 'reason_code':'preference'})
+        target = ordered[-1]
+        response = {'id':target['id'], 'disposition':'wait', 'summary':'已核对', 'next_action':'等待依据',
+                    'evidence_gap':'尚未定位', 'lesson_id':'', 'human_reason':'', 'alternatives':[]}
+        with patch.object(WorkQueue, 'items', side_effect=AssertionError('full queue scan')), patch.object(autonomy, 'SYNC_LIMIT', 5), patch.object(model, 'invoke', return_value=({'items':[response]}, 'synthetic')) as invoke:
+            self.assertEqual(autonomy.investigate(self.store)['processed'], 0)
+            invoke.assert_not_called()
+            self.assertEqual(autonomy.investigate(self.store)['processed'], 1)
+
+    def test_authorization_version_change_after_preparation_blocks_dispatch(self):
+        from activity_mvp import conversation_scope
+        self.item()
+        binding = ['first']
+        def changed(store, prompt, schema, **kwargs):
+            binding[0] = 'second'
+            kwargs['dispatch_check']()
+            self.fail('new policy accepted old payload')
+        with patch.object(conversation_scope, 'binding', side_effect=lambda: binding[0]), patch.object(model, 'invoke', side_effect=changed):
+            with self.assertRaisesRegex(PermissionError, 'autonomy_paused'):
+                autonomy.investigate(self.store)
+
+    def test_real_invoke_rechecks_choice_after_reservation_before_popen(self):
+        self.item()
+        self.store.set('model_capability', {'enabled':True})
+        real_invoke = model.invoke
+        def reserve_then_choose(store, prompt, schema, **kwargs):
+            kwargs['on_reserved'] = lambda _: self.store.decision('issue', {'reason':'需要本人选择', 'reason_code':'payment'})
+            kwargs['include_lessons'] = False
+            return real_invoke(store, prompt, schema, **kwargs)
+        with patch.object(model, 'runtime_binary', return_value='/usr/bin/true'), patch.object(model.subprocess, 'Popen') as launch, patch.object(model, 'invoke', side_effect=reserve_then_choose):
+            with self.assertRaisesRegex(PermissionError, 'investigation_inputs_changed'):
+                autonomy.investigate(self.store)
+        launch.assert_not_called()
+        budget = self.store.rows('SELECT * FROM budget')
+        self.assertEqual(len(budget), 1)
+        run = next((self.store.root/'runs'/budget[0]['id']).iterdir())
+        self.assertTrue(model.not_dispatched(self.store, budget[0]['id'], run))
+        self.assertEqual(budget[0]['state'], 'unknown')
+
     def test_migration_preserves_history_and_never_fakes_answer(self):
         key = self.store.decision('issue', {'reason':next(iter(autonomy.TECHNICAL_REASONS))})
         before = self.store.rows('SELECT * FROM quotes')

@@ -1,4 +1,4 @@
-"""Local AGI consumer. Owner writes are never exposed through its consumer API."""
+"""Local PSI consumer. Owner writes are never exposed through its consumer API."""
 from pathlib import Path
 import stat
 import os
@@ -12,18 +12,21 @@ from .storage import connect
 
 def owner_action(conn, action, payload):
     with shared.agi_scope():
-        if action == "feedback":
+        if action in {"feedback", "feedback-receipt"}:
             if (set(payload) - {"share_key", "useful", "resume_seconds", "confirm_owner"}
                     or payload.get("confirm_owner") is not True or type(payload.get("useful")) is not bool):
-                raise ValueError("owner_feedback_required")
+                raise shared.OwnerActionRejected("owner_feedback_required")
             seconds = payload.get("resume_seconds")
             if seconds is not None and (type(seconds) not in (int, float) or not math.isfinite(seconds) or not 0 <= seconds <= 86400):
-                raise ValueError("invalid_resume_seconds")
-            # AGI feedback must not join or alter the existing Codex value experiment.
+                raise shared.OwnerActionRejected("invalid_resume_seconds")
+            # PSI feedback must not join or alter the existing Codex value experiment.
             with shared.context._context_authorization_lock(conn, exclusive=False):
                 shared._find_share(conn, payload.get("share_key"))
                 row = conn.execute("SELECT value FROM daemon_state WHERE key='agi_owner_feedback'").fetchone()
                 entries = json.loads(row[0]) if row else {}
+                if action == "feedback-receipt":
+                    matched = entries.get(payload["share_key"]) == {"useful":payload["useful"], "resume_seconds":seconds}
+                    return {"interface":"sharing-feedback-receipt", "status":"confirmed" if matched else "not_confirmed", "raw_access":False}
                 entries[payload["share_key"]] = {"useful": payload["useful"], "resume_seconds": seconds}
                 entries = dict(list(entries.items())[-500:])
                 conn.execute("INSERT OR REPLACE INTO daemon_state(key,value,updated_at) VALUES('agi_owner_feedback',?,?)",
@@ -39,7 +42,7 @@ def owner_action(conn, action, payload):
             for pack in result["shares"]:
                 rating = feedback.get(pack["share_key"])
                 pack["owner_helpfulness"] = ("helpful" if rating["useful"] else "not_helpful") if rating else "not_assessed"
-            result["withdrawal_notice"] = "撤回阻止后续读取；AGI 只保留无正文的引用和审计记录。"
+            result["withdrawal_notice"] = "撤回阻止后续读取；PSI 只保留无正文的引用和审计记录。"
             from .presentation_scope import for_connection
             result = for_connection(conn).project(result)
             if isinstance(result.get('shares'), list):

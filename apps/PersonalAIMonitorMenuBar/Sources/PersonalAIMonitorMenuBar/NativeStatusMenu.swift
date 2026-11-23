@@ -31,7 +31,7 @@ final class NativeStatusMenu: NSObject, NSMenuDelegate {
         guard statusItem == nil, runner != nil else { return }
         menu.autoenablesItems = false
         menu.delegate = self
-        let heading = NSMenuItem(title: "AGI · 个人 AI 工作系统", action: nil, keyEquivalent: "")
+        let heading = NSMenuItem(title: "PSI · 个人 AI 工作系统", action: nil, keyEquivalent: "")
         heading.isEnabled = false
         menu.addItem(heading)
         statusLine.isEnabled = false
@@ -41,9 +41,9 @@ final class NativeStatusMenu: NSObject, NSMenuDelegate {
         fileProgress.isEnabled = false
         menu.addItem(fileProgress)
         menu.addItem(.separator())
-        menu.addItem(item("打开 AGI", #selector(openPanel)))
+        menu.addItem(item("打开 PSI", #selector(openPanel)))
         menu.addItem(item("自主进化", #selector(openEvolution)))
-        menu.addItem(item("供 AGI 使用的摘要…", #selector(openAGISharing)))
+        menu.addItem(item("供 PSI 使用的摘要…", #selector(openAGISharing)))
         menu.addItem(item("给 Codex 的上下文…", #selector(openCodexSharing)))
         menu.addItem(.separator())
         beginCapture = item("采集 30 分钟", #selector(beginScreenCapture))
@@ -66,25 +66,18 @@ final class NativeStatusMenu: NSObject, NSMenuDelegate {
         menu.addItem(start)
         menu.addItem(.separator())
         menu.addItem(item("刷新状态", #selector(refreshStatus)))
-        quit = item("退出", #selector(stopAndQuit))
+        quit = item("关闭控制台", #selector(closeConsole))
         menu.addItem(quit)
         let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        let icon = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
-            NSColor.labelColor.setStroke()
-            for start: CGFloat in [55, 175, 295] {
-                let ring = NSBezierPath()
-                ring.appendArc(withCenter: NSPoint(x: 9, y: 9), radius: 6, startAngle: start, endAngle: start + 70)
-                ring.lineWidth = 2.25; ring.lineCapStyle = .butt; ring.stroke()
-            }
-            NSColor.labelColor.setFill()
-            NSBezierPath(ovalIn: NSRect(x: 6.9, y: 6.9, width: 4.2, height: 4.2)).fill()
-            return true
-        }
-        icon.isTemplate = true
+        IdlePublicationCoordinator.shared.registerStatusItem(statusItem)
+        let icon = Bundle.main.url(forResource: "AppIcon", withExtension: "icns")
+            .flatMap { NSImage(contentsOf: $0) }
+        icon?.size = NSSize(width: 18, height: 18)
+        icon?.isTemplate = false
         statusItem.button?.image = icon
         statusItem.button?.imagePosition = .imageLeading
         statusItem.button?.font = .monospacedSystemFont(ofSize: 11, weight: .medium)
-        statusItem.button?.setAccessibilityLabel("AGI")
+        statusItem.button?.setAccessibilityLabel("PSI")
         statusItem.menu = menu
         self.statusItem = statusItem
         updateText()
@@ -140,11 +133,11 @@ final class NativeStatusMenu: NSObject, NSMenuDelegate {
         resume.isHidden = !snapshot.captureActionsAvailable || presentation.action != .resume
         start.isHidden = !snapshot.captureActionsAvailable || presentation.action != .start
         quit.isHidden = false
-        quit.title = "停止 AGI 全部后台并退出"
+        quit.title = "停止 PSI 全部后台并退出"
     }
 
     func menuWillOpen(_ menu: NSMenu) {
-        IdlePublicationCoordinator.shared.userInteraction()
+        IdlePublicationCoordinator.shared.menuOpen = true
         runner?.setMenuVisible(true)
         updateText()
         updateActions()
@@ -158,7 +151,9 @@ final class NativeStatusMenu: NSObject, NSMenuDelegate {
         }
     }
 
-    func menuDidClose(_ menu: NSMenu) { runner?.setMenuVisible(false) }
+    func menuDidClose(_ menu: NSMenu) {
+        IdlePublicationCoordinator.shared.menuOpen = false
+        runner?.setMenuVisible(false) }
 
     @objc private func openCodexSharing() {
         guard let runner else { return }
@@ -215,8 +210,5 @@ final class NativeStatusMenu: NSObject, NSMenuDelegate {
         guard let runner, runner.statusSnapshot.captureActionsAvailable else { return }
         Task { await runner.startRecordingService() }
     }
-    @objc private func stopAndQuit() {
-        guard let runner else { return }
-        Task { await runner.stopRecordingAndQuit() }
-    }
+    @objc private func closeConsole() { NSApp.terminate(nil) }
 }

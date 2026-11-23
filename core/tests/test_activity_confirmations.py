@@ -246,7 +246,7 @@ class ActivityConfirmationTests(unittest.TestCase):
         }
 
     def test_schema_and_public_contract_are_content_minimal(self) -> None:
-        self.assertEqual(SCHEMA_VERSION, 32)
+        self.assertEqual(SCHEMA_VERSION, 33)
         tables = {row["name"] for row in self.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertIn("activity_confirmation_items", tables)
         self.assertIn("activity_confirmation_calibrations", tables)
@@ -296,7 +296,9 @@ class ActivityConfirmationTests(unittest.TestCase):
             DROP TRIGGER pam_schema31_guard_insert;
             DROP TRIGGER pam_schema31_guard_update;
             DROP TRIGGER pam_schema32_guard_insert;
+            DROP TRIGGER pam_schema33_guard_insert;
             DROP TRIGGER pam_schema32_guard_update;
+            DROP TRIGGER pam_schema33_guard_update;
             """
         )
         rows = (
@@ -4957,7 +4959,9 @@ class ActivityConfirmationTests(unittest.TestCase):
         original.execute("DROP TRIGGER IF EXISTS pam_schema31_guard_insert")
         original.execute("DROP TRIGGER IF EXISTS pam_schema31_guard_update")
         original.execute("DROP TRIGGER IF EXISTS pam_schema32_guard_insert")
+        original.execute("DROP TRIGGER IF EXISTS pam_schema33_guard_insert")
         original.execute("DROP TRIGGER IF EXISTS pam_schema32_guard_update")
+        original.execute("DROP TRIGGER IF EXISTS pam_schema33_guard_update")
         original.execute("UPDATE meta SET value='28' WHERE key='schema_version'")
         original.commit()
         original.close()
@@ -5032,7 +5036,9 @@ class ActivityConfirmationTests(unittest.TestCase):
             "DROP TRIGGER pam_schema31_guard_insert;"
             "DROP TRIGGER pam_schema31_guard_update;"
             "DROP TRIGGER pam_schema32_guard_insert;"
+            "DROP TRIGGER pam_schema33_guard_insert;"
             "DROP TRIGGER pam_schema32_guard_update;"
+            "DROP TRIGGER pam_schema33_guard_update;"
         )
         original.execute("UPDATE meta SET value='27' WHERE key='schema_version'")
         original.commit()
@@ -5084,7 +5090,9 @@ class ActivityConfirmationTests(unittest.TestCase):
             "DROP TRIGGER pam_schema31_guard_insert;"
             "DROP TRIGGER pam_schema31_guard_update;"
             "DROP TRIGGER pam_schema32_guard_insert;"
+            "DROP TRIGGER pam_schema33_guard_insert;"
             "DROP TRIGGER pam_schema32_guard_update;"
+            "DROP TRIGGER pam_schema33_guard_update;"
         )
         corrupt.execute("UPDATE meta SET value='27' WHERE key='schema_version'")
         corrupt.commit()
@@ -5105,7 +5113,9 @@ class ActivityConfirmationTests(unittest.TestCase):
             "DROP TRIGGER pam_schema31_guard_insert;"
             "DROP TRIGGER pam_schema31_guard_update;"
             "DROP TRIGGER pam_schema32_guard_insert;"
+            "DROP TRIGGER pam_schema33_guard_insert;"
             "DROP TRIGGER pam_schema32_guard_update;"
+            "DROP TRIGGER pam_schema33_guard_update;"
         )
         symlink_source.execute("UPDATE meta SET value='27' WHERE key='schema_version'")
         symlink_source.commit()
@@ -5131,7 +5141,9 @@ class ActivityConfirmationTests(unittest.TestCase):
             "DROP TRIGGER pam_schema31_guard_insert;"
             "DROP TRIGGER pam_schema31_guard_update;"
             "DROP TRIGGER pam_schema32_guard_insert;"
+            "DROP TRIGGER pam_schema33_guard_insert;"
             "DROP TRIGGER pam_schema32_guard_update;"
+            "DROP TRIGGER pam_schema33_guard_update;"
         )
         permissions.execute("UPDATE meta SET value='27' WHERE key='schema_version'")
         permissions.commit()

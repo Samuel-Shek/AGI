@@ -6,11 +6,11 @@ import plistlib
 import time
 from .store import packed, atomic
 
-GUARDS = ('control.py','cli.py','acceptance.py','store.py','policy.py','model.py','repair.py','release.py','recovery_storage.py','service.py','isolation.py','probes.py','proactive.py','proactive_contracts.py','fixed_verification.py','swift_verification.py','conversation_scope.py',
-          'work.py','routing.py','autonomy.py','projects.py','project_repair.py','memory_autonomy.py','memory_operator.py','jev_ranking.py','jev_dispatch.py','memory_coverage.py','sources.py','sync_center.py','task_maintenance.py','evolution_notices.py', 'attention_native.py', 'reflection/store.py','reflection/sources.py','reflection/analysis.py','reflection/service.py','reflection/cli.py')
+GUARDS = ('control.py','cli.py','acceptance.py','store.py','policy.py','model.py','repair.py','release.py','idle_exit.py','recovery_storage.py','service.py','isolation.py','probes.py','proactive.py','proactive_contracts.py','fixed_verification.py','swift_verification.py','conversation_scope.py','local_checks.py',
+          'work.py','routing.py','autonomy.py','projects.py','project_repair.py','memory_autonomy.py','memory_operator.py','jev_ranking.py','jev_dispatch.py','memory_coverage.py','sources.py','sync_center.py','task_maintenance.py','evolution_notices.py', 'attention_native.py', 'native_metadata.py', 'native_worktree.py', 'retirement_snapshot.py', 'reflection/store.py','reflection/sources.py','reflection/analysis.py','reflection/service.py','reflection/cli.py')
 
 def guard_hashes():
-    return {name:hashlib.sha256(((Path(__file__).parent.parent/name) if name.startswith('reflection/') or name in {'attention_native.py','conversation_scope.py'} else Path(__file__).with_name(name)).read_bytes()).hexdigest() for name in GUARDS}
+    return {name:hashlib.sha256(((Path(__file__).parent.parent/name) if name.startswith('reflection/') or name in {'attention_native.py','native_metadata.py','native_worktree.py','retirement_snapshot.py','conversation_scope.py','local_checks.py'} else Path(__file__).with_name(name)).read_bytes()).hexdigest() for name in GUARDS}
 
 def release_ready(store):
     cap=store.get('repair_capability',{})
@@ -66,7 +66,7 @@ def continue_verified_release(store, item, receipt):
                      'policy':old['policy.py'], 'base':verification.get('base')}: return False
     manifest = verification.get('source_manifest', {})
     for key, sha in current.items():
-        path = 'core/activity_mvp/' + (key if key.startswith('reflection/') or key in {'attention_native.py','conversation_scope.py'} else 'feedback/'+key)
+        path = 'core/activity_mvp/' + (key if key.startswith('reflection/') or key in {'attention_native.py','native_metadata.py','native_worktree.py','retirement_snapshot.py','conversation_scope.py','local_checks.py'} else 'feedback/'+key)
         if manifest.get(path) != sha: return False
     if any(verification.get('tests',{}).get(key,{}).get('passed') is not True
            for key in ('core','evolution','swift','interaction','privacy','build')): return False

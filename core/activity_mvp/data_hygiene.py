@@ -83,7 +83,7 @@ def data_hygiene_report(core_root: str | Path, db_path: str | Path) -> dict:
     if not db.is_absolute():
         db = core / db
     home = Path.home()
-    live_core = home / "Library/Application Support/Personal AI Monitor/core"
+    live_core = home / "Library/Application Support/PSI/core"
     live_data = live_core / "data"
     release_backups = _release_backups_inventory(live_core.parent / "release-backups")
     # Closed recovery packages are an explicit metadata-only inventory. Never
@@ -349,7 +349,7 @@ def hygiene_cleanup_report(
         db = core / db
     hygiene = data_hygiene_report(core, db)
     home = Path.home()
-    live_core = home / "Library/Application Support/Personal AI Monitor/core"
+    live_core = home / "Library/Application Support/PSI/core"
     live_data = live_core / "data"
     live_cache_root = live_data / "ha_packages"
     quarantine_root = _quarantine_root()
@@ -607,7 +607,7 @@ def _backup_candidates(locations: list[dict], *, extra_candidates: list[dict] | 
 def _hygiene_automation_preview(core: Path, db: Path, ha_cache_candidates: list[dict]) -> dict:
     del core
     home = Path.home()
-    live_data = home / "Library/Application Support/Personal AI Monitor/core/data"
+    live_data = home / "Library/Application Support/PSI/core/data"
     live_cache_root = live_data / "ha_packages"
     current_time = _coerce_datetime(None)
     strict_health = _strict_cleanup_health(db)
@@ -672,7 +672,7 @@ def _coerce_datetime(value: datetime | str | None) -> datetime:
 
 
 def _quarantine_root() -> Path:
-    return Path.home() / "Library/Application Support/Personal AI Monitor/quarantine"
+    return Path.home() / "Library/Application Support/PSI/quarantine"
 
 
 def _ha_cache_cleanup_actions(candidates: list[dict], live_cache_root: Path) -> list[dict]:
@@ -1494,7 +1494,7 @@ def _write_backup_cleanup_audit(actions: list[dict], now: datetime) -> str:
     deleted = [item for item in actions if item.get("deleted")]
     if not deleted:
         return ""
-    root = Path.home() / "Library/Application Support/Personal AI Monitor/cleanup-audits"
+    root = Path.home() / "Library/Application Support/PSI/cleanup-audits"
     root.mkdir(parents=True, exist_ok=True)
     root.chmod(0o700)
     path = root / f"hygiene-cleanup-{now.astimezone().strftime('%Y%m%d-%H%M%S')}.md"

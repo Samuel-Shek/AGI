@@ -1,3 +1,4 @@
+from tests.closure_legacy_fixture import legacy_begin
 """Owner manual use must not confer scheduler, memory or sending authority."""
 import hashlib
 import json
@@ -19,7 +20,7 @@ class AuthorizedManualTests(unittest.TestCase):
         self.store=core.Store(self.database)
         self.file=self.root/'read-input.txt';self.file.write_text('isolated input')
         self.output=self.root/'output.txt';self.output.write_text('isolated output')
-        self.task_id=self.store.begin({'platform':'codex','session':'native-test','turn':'current',
+        self.task_id=legacy_begin(self.store, {'platform':'codex','session':'native-test','turn':'current',
             'objective':'isolated owner-authorized check','scope_root':str(self.root),'complex':True})['task_id']
         self.task=dict(self.store.conn.execute('SELECT * FROM closure_tasks WHERE id=?',(self.task_id,)).fetchone())
         self.native={k:self.task[k] for k in ('platform','session','turn')};self.native['task_id']=self.task_id

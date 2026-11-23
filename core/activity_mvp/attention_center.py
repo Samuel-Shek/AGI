@@ -1,4 +1,4 @@
-"""Read-only, content-minimising projections for AGI's decision workspace.
+"""Read-only, content-minimising projections for PSI's decision workspace.
 
 Evidence files, answerable questions and memory decisions have separate units.
 This module never marks an unavailable source repaired or answers a question.
@@ -14,6 +14,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from . import attention_native as native
 from . import memory_review as memory
 from .activity_confirmations import (
     activity_confirmation_card_snapshot, resolve_confirmation_range,
@@ -116,6 +117,13 @@ def _activity_issue(card):
         inaction="保持待答复，不会因为时间过去而自动同意或否定。",
         recommendation="仅确认你确知的结果；记不清时可以暂缓，或交给 Codex 查证。",
         completion_rule="当前事项版本的回答成功写入，重新读取后状态与选择一致。")
+
+
+def _historical_questions(cards):
+    return _issue("historical-questions", "historical_questions", "历史待答复事项",
+        f"{len(cards)} 个历史问题仍保留待答复，可按需继续。",
+        member_count=len(cards), children=[_activity_issue(c) for c in cards],
+        impact="保留待答复状态；不要求为了清空列表逐条回忆。")
 
 
 def current_evidence_gaps(conn):
@@ -288,10 +296,7 @@ def _snapshot(conn, *, queue_path=None, ledger_path=None):
         if old_cards:
             # Historical questions remain answerable and unresolved; their age is
             # not a fabricated answer and they are never silently deleted.
-            resources.append(_issue("historical-questions", "historical_questions", "历史待答复事项",
-                f"{len(old_cards)} 个历史问题仍保留待答复，可按需继续。",
-                member_count=len(old_cards), children=[_activity_issue(c) for c in old_cards],
-                impact="保留待答复状态；不要求为了清空列表逐条回忆。"))
+            resources.append(_historical_questions(old_cards))
         if insufficient:
             resources.append(_issue("insufficient-clues", "reference", "信息不足的线索",
                 f"最近 7 天有 {insufficient} 组线索未形成可回答的问题。",
@@ -400,7 +405,7 @@ def _snapshot(conn, *, queue_path=None, ledger_path=None):
                         recommendation="在批评与改进中查看原话、证据与处理方案。"))
     except (OSError,sqlite3.Error,ValueError):
         systems.append(_issue("feedback-read-unavailable","system","批评与改进暂不可读取","该部分状态未知，不能据此判断没有待办。"))
-    # Hermes is a separate system; its watcher state never changes AGI's own completeness.
+    # Hermes is a separate system; its watcher state never changes PSI's own completeness.
     compat_systems, compat_resources = _hermes_compat_issues()
     systems.extend(compat_systems)
     resources.extend(compat_resources)
@@ -429,13 +434,57 @@ def _snapshot(conn, *, queue_path=None, ledger_path=None):
             "decisions":decisions, "systems":systems, "resources":resources, "closures":closures}
 
 
+def _activity_detail(conn, identifier):
+    """Read current activity evidence without visiting unrelated subsystems.
+
+    Draft saves and receipts recheck this same route before and after writing.
+    Keep the existing filtered card construction and final policy checks; an
+    identifier alone is never evidence that the source remains available.
+    """
+    from .presentation_scope import display_scope, read_view, ACTIVITY_TABLES
+    from .retirement_snapshot import source_snapshot
+    from .task_closure import personal_scope
+    from .user_decisions import decision_text_read_cache
+    database = next((r[2] for r in conn.execute("PRAGMA database_list") if r[1] == "main"), "")
+    with decision_text_read_cache(), source_snapshot(personal_scope, bounded_evidence=True), display_scope(Path(database).parent) as scope:
+        try:
+            view = read_view(conn, scope, ACTIVITY_TABLES)
+            ranges = (True,) if identifier == "historical-questions" else (False, True)
+            for historical in ranges:
+                _, cards = _cards(view, historical=historical)
+                # Preserve snapshot's list projection, including the historical
+                # parent. A withdrawn parent must also withhold its children.
+                items = ([_historical_questions(cards)] if cards else []) if historical else [
+                    _activity_issue(card) for card in cards]
+                projected = scope.project({"status":"ok", "items":items})
+                if projected.get("status") != "ok":
+                    return projected
+                for parent in projected["items"]:
+                    for item in [parent, *parent.get("children", [])]:
+                        if item["id"] == identifier:
+                            return {"interface":"attention-center", "contract":CONTRACT,
+                                    "status":"ok", "item":item}
+            return scope.project({"interface":"attention-center", "contract":CONTRACT,
+                                  "status":"changed"})
+        except (sqlite3.Error, RuntimeError, ValueError, OSError):
+            return scope.project({"interface":"attention-center", "contract":CONTRACT,
+                                  "status":"unavailable", "raw_access":False})
+
+
 def detail(conn, identifier, **paths):
     if identifier.startswith("closure:"):
-        from .task_closure import projection
+        from .closure_trace import detail as trace_detail
         database = next((row[2] for row in conn.execute("PRAGMA database_list") if row[1] == "main"), None)
-        items = projection(database, identifier=identifier.removeprefix("closure:")) if database else []
+        try:
+            items = [trace_detail(database, identifier)["item"]] if database else []
+        except ValueError as error:
+            if str(error) != "trace_issue_unavailable": raise
+            items = []
         return {"interface":"attention-center", "contract":CONTRACT,
                 "status":"ok" if items else "changed", **({"item":items[0]} if items else {})}
+    if identifier == "historical-questions" or (
+            identifier.startswith("activity-") and identifier != "activity-read-unavailable"):
+        return _activity_detail(conn, identifier)
     state = snapshot(conn, **paths)
     for item in state["decisions"] + state["systems"] + state["resources"] + state["closures"]:
         if item["id"] == identifier:
@@ -448,9 +497,40 @@ def detail(conn, identifier, **paths):
             "message":"事项已变化，请重新读取；没有执行任何处理。"}
 
 
+def _read_codex_model_settings(ipc, thread, owner):
+    response = ipc.call("thread-follower-read-model-settings", {"conversationId":thread},
+                        version=1, target=owner, timeout=1)
+    settings = response["result"]["settings"]
+    if not isinstance(settings, dict) or not isinstance(settings.get("model"), str) or "reasoningEffort" not in settings:
+        raise native.NativeError("codex_model_settings_unavailable")
+    return settings["model"], settings["reasoningEffort"]
+
+
+def open_existing_codex_thread(thread, settings):
+    """Open a validated existing chat and apply the defaults to its next turn."""
+    thread = native.thread_id(thread)
+    desired = settings["model"], settings["reasoning_effort"]
+    native.open_thread(thread, timeout=3)
+    try:
+        owner = native.wait_owner(thread, timeout=3)
+        with native.DesktopIPC() as ipc:
+            current = _read_codex_model_settings(ipc, thread, owner)
+            if current == desired:
+                return
+            ipc.call("thread-follower-update-thread-settings", {
+                "conversationId":thread,
+                "threadSettings":{"model":desired[0], "effort":desired[1]},
+                "condition":{"ifModelEquals":current[0], "ifEffortEquals":current[1]},
+            }, version=2, target=owner, timeout=2)
+            if _read_codex_model_settings(ipc, thread, owner) != desired:
+                raise native.NativeError("codex_model_settings_unverified")
+    except (native.NativeError, OSError, KeyError) as exc:
+        raise native.NativeError("codex_model_settings_unverified",
+                                 "已请求打开原聊天，但未能确认模型和思考等级已切换。请查看 Codex。") from exc
+
+
 def open_closure_codex(conn, identifier, payload):
     """Recheck this item's identity, then request navigation without a turn."""
-    from . import attention_native as native
     item = detail(conn, identifier).get("item")
     assistance = payload.get("assistance") is True
     field = "codex_assistance_thread_id" if assistance else "codex_thread_id"
@@ -464,6 +544,8 @@ def open_closure_codex(conn, identifier, payload):
         try:
             return command(database, "handoff-open", identifier, payload)
         except (RuntimeError, OSError, KeyError) as exc:
+            if getattr(exc, "code", None) == "codex_model_settings_unverified":
+                return {"status":"unavailable", "navigation_requested":True, "error":str(exc), "error_code":exc.code}
             return {"status":"unavailable", "error":"负责聊天暂时无法打开。事项仍保留，请重新核对接手状态。",
                     "error_code":getattr(exc, "code", "codex_open_failed")}
     thread = native.thread_id(item["codex_thread_id"])
@@ -478,12 +560,15 @@ def open_closure_codex(conn, identifier, payload):
                 raise
             if current.get("id") != thread:
                 raise native.NativeError("codex_thread_mismatch")
+            settings = server.initial_collaboration_mode()["settings"]
         # Recheck after the read: an owner/revision change must invalidate click.
         latest = detail(conn, identifier).get("item")
         if not latest or latest["revision"] != item["revision"] or latest.get("codex_thread_id") != thread:
             raise ValueError("负责聊天已变化，请重新读取后再打开。")
-        native.open_thread(thread, timeout=3)
+        open_existing_codex_thread(thread, settings)
     except (native.NativeError, OSError, KeyError) as exc:
+        if getattr(exc, "code", None) == "codex_model_settings_unverified":
+            return {"status":"unavailable", "navigation_requested":True, "error":str(exc), "error_code":exc.code}
         receipt = None
         if metadata_unavailable:
             from .attention_handoff import Queue
@@ -581,7 +666,7 @@ def read_payload():
 
 
 def main(argv=None, *, database=None):
-    parser = argparse.ArgumentParser(description="AGI attention workspace")
+    parser = argparse.ArgumentParser(description="PSI attention workspace")
     parser.add_argument("--db", default=database or "data/activity.sqlite")
     parser.add_argument("action", choices=("snapshot", "detail", "closure-open", "preview", "apply", "source-search", "investigation-record", "handoff-status", "handoff-submit", "handoff-retry", "handoff-open", "handoff-check", "draft"))
     parser.add_argument("--id", default="")

@@ -1,8 +1,10 @@
+from tests.closure_legacy_fixture import legacy_begin
 import json
 import sqlite3
 import subprocess
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,7 +20,7 @@ class ClosureNotificationTests(unittest.TestCase):
         self.source = self.root / "fixture.txt"
         self.source.write_text("notification isolation fixture")
         self.store = closure.Store(self.database)
-        self.task = self.store.begin({"platform": "codex", "session": "notification-fixture",
+        self.task = legacy_begin(self.store, {"platform": "codex", "session": "notification-fixture",
             "turn": "one", "objective": "isolated notification regression", "scope_root": str(self.root),
             "complex": True})["task_id"]
 
@@ -35,7 +37,9 @@ class ClosureNotificationTests(unittest.TestCase):
                 "external": False, "personal_choice": choice},
             "recommendation": "fixture", "acceptance_rule": "fixture"})["issue"]
 
-    def block(self, item, reason="同一限制", state="blocked"):
+    def block(self, item, reason="同一限制", state="blocked", actionable=True):
+        if state == "blocked" and actionable:
+            self.store.conn.execute("UPDATE closure_issues SET dispatch_state='send_uncertain' WHERE id=?", (item["id"],))
         return self.store.transition(item["id"], state, reason, item["revision"],
             "fixture recovery" if state == "blocked" else None)
 
@@ -84,8 +88,9 @@ class ClosureNotificationTests(unittest.TestCase):
         self.assertNotIn("customer-project", script)
         self.assertNotIn("私密摘要", script)
         self.assertNotIn(str(self.root), script)
-        self.assertIn("打开 AGI → 注意力中心", script)
-        self.assertIn("负责人继续跟进", script)
+        self.assertNotIn("打开 PSI", script)
+        self.assertIn("未重发", script)
+        self.assertIn("原事项", script)
 
     def test_cooldown_defers_without_mutating_request_then_sends(self):
         with patch.object(closure.time, "time", return_value=1000):
@@ -112,12 +117,10 @@ class ClosureNotificationTests(unittest.TestCase):
         item = self.block(self.issue("resolved"))
         self.store.accept({"issue_id": item["id"], "revision": item["revision"], "verified": True,
             "reviewer": "isolated reviewer", "review": "read fixture", "evidence": [{"path": str(self.source)}]})
-        script = self.tick().call_args.args[0][-1]
-        self.assertIn("1项已解决", script)
-        self.assertNotIn("项受阻", script)
+        self.assertEqual(self.tick().call_count, 0)
         rows = self.notices()
         self.assertEqual(rows[0][1:], (0, "notification_obsolete"))
-        self.assertEqual(rows[1][1:], (1, None))
+        self.assertEqual(rows[1][1:], (0, "notification_obsolete"))
 
     def test_entire_batch_unknown_before_subprocess_and_never_retried(self):
         for index in range(3): self.block(self.issue(str(index)))
@@ -215,13 +218,96 @@ class ClosureNotificationTests(unittest.TestCase):
         self.assertEqual(self.store.get(item["id"])["state"], "canceled")
         self.assertEqual(self.notices()[0][1:], (0, "notification_obsolete"))
 
-    def test_current_canceled_completion_is_announced_once(self):
+    def test_current_canceled_completion_stays_local(self):
         item = self.block(self.issue("canceled"), state="canceled")
         self.store.cancellation_check({"issue_id": item["id"], "revision": item["revision"],
             "verified": True, "reviewer": "isolated reviewer", "review": "no side effects",
             "evidence": [{"path": str(self.source)}]})
-        self.assertIn("1项已取消", self.tick().call_args.args[0][-1])
         self.assertEqual(self.tick().call_count, 0)
+        self.assertEqual(self.tick().call_count, 0)
+
+    def test_agent_owned_technical_wait_stays_local_then_decision_is_delivered(self):
+        item = self.block(self.issue("recoverable"), actionable=False)
+        self.assertEqual(self.tick().call_count, 0)
+        self.assertEqual(self.notices()[0][1:], (0, "notification_local_only"))
+        item = self.block(item, state="decision")
+        sender = self.tick()
+        self.assertEqual(sender.call_count, 1)
+        self.assertIn(item["id"][:8], sender.call_args.args[0][-1])
+        self.assertIn("相关操作保持等待", sender.call_args.args[0][-1])
+        self.assertEqual(self.store.get(item["id"])["state"], "decision")
+
+    def test_unknown_dispatch_after_local_wait_is_not_silenced(self):
+        item = self.block(self.issue("unknown-later"), actionable=False)
+        self.tick()
+        self.store.conn.execute("UPDATE closure_issues SET dispatch_state='creation_uncertain' WHERE id=?", (item["id"],))
+        self.store.event("dispatch_uncertain", {"code": "fixture"}, issue=item["id"], task=self.task, notify=True)
+        self.assertEqual(self.tick().call_count, 1)
+        self.assertEqual(self.tick().call_count, 0)
+
+    def test_canceled_after_claim_never_enters_sender(self):
+        item = self.issue("cancel-before-send", choice=True)
+        original = self.store.event
+        armed = False
+        def event(kind, *args, **kwargs):
+            nonlocal armed
+            result = original(kind, *args, **kwargs)
+            if kind == "notification_digest_started": armed = True
+            return result
+        transaction = self.store.transaction
+        @contextmanager
+        def concurrent_choice():
+            nonlocal armed
+            with transaction(): yield
+            if armed:
+                armed = False
+                current = self.store.get(item["id"])
+                self.store.transition(current["id"], "canceled", "fixture human cancellation", current["revision"])
+        with patch.object(self.store, "event", side_effect=event), patch.object(self.store, "transaction", concurrent_choice):
+            self.assertEqual(self.tick().call_count, 0)
+        self.assertEqual(self.tick().call_count, 0)
+        self.assertEqual(self.store.get(item["id"])["state"], "canceled")
+        self.assertEqual(self.notices()[0][1], 0)
+
+    def test_new_decision_version_after_claim_remains_pending_for_next_tick(self):
+        item = self.issue("new-version-before-send", choice=True)
+        original = self.store.event
+        armed = False
+        def event(kind, *args, **kwargs):
+            nonlocal armed
+            result = original(kind, *args, **kwargs)
+            if kind == "notification_digest_started": armed = True
+            return result
+        transaction = self.store.transaction
+        @contextmanager
+        def concurrent_choice():
+            nonlocal armed
+            with transaction(): yield
+            if armed:
+                armed = False
+                current = self.store.get(item["id"])
+                self.store.transition(current["id"], "decision", "updated terms", current["revision"])
+        with patch.object(closure.time, "time", return_value=1000), patch.object(self.store, "event", side_effect=event), patch.object(self.store, "transaction", concurrent_choice):
+            self.assertEqual(self.tick().call_count, 0)
+        self.assertEqual(self.notices()[0][1:], (0, None))
+        with patch.object(closure.time, "time", return_value=2000):
+            sender = self.tick()
+        self.assertEqual(sender.call_count, 1)
+        self.assertIn("版本 2", sender.call_args.args[0][-1])
+
+    def test_explicit_keep_waiting_silences_old_notice_but_not_new_decision(self):
+        item = self.issue("human-wait", choice=True)
+        preview = self.store.choice_preview(item["id"])
+        item = self.store.decide({"token": preview["token"], "issue_id": item["id"],
+            "revision": item["revision"], "choice": "keep_waiting"})
+        self.assertEqual(self.tick().call_count, 0)
+        self.assertEqual(self.notices()[0][1:], (0, "notification_human_wait"))
+        self.assertEqual(self.store.get(item["id"])["state"], "decision")
+        item = self.store.transition(item["id"], "decision", "new independent terms", item["revision"])
+        self.store.event("authority_restricted", {"state": "decision"}, issue=item["id"], task=self.task, notify=True)
+        sender = self.tick()
+        self.assertEqual(sender.call_count, 1)
+        self.assertIn("版本 3", sender.call_args.args[0][-1])
 
     def test_resolved_completion_with_changed_evidence_is_not_announced(self):
         item = self.issue("resolved")

@@ -104,7 +104,7 @@ class ReleaseEvidenceTests(unittest.TestCase):
                 ET.SubElement(case, "skipped")
         ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
 
-    def test_tracked_baseline_is_exactly_current_65_plus_31_source_set(self) -> None:
+    def test_tracked_baseline_is_exactly_current_76_plus_31_source_set(self) -> None:
         baseline_path = REPO_ROOT / "tools" / "swift-release-test-baseline.json"
         baseline = swift_report.load_baseline_tests(baseline_path)
         xctest_source, swift_source = self._source_paths()
@@ -113,7 +113,7 @@ class ReleaseEvidenceTests(unittest.TestCase):
             swift_report.validate_source_against_baseline(declared, baseline),
             baseline,
         )
-        self.assertEqual(sum(test.kind == "xctest" for test in baseline), 65)
+        self.assertEqual(sum(test.kind == "xctest" for test in baseline), 76)
         self.assertEqual(sum(test.kind == "swift-testing" for test in baseline), 31)
 
         available = self.root / "available.json"
@@ -478,9 +478,9 @@ else:
                     summary = json.loads(
                         (evidence / "summary.json").read_text(encoding="utf-8")
                     )
-                    self.assertEqual(summary["expected_total"], 96)
+                    self.assertEqual(summary["expected_total"], 107)
                     self.assertEqual(summary["executed_filtered_swift_testing"], 0)
-                    self.assertEqual(summary["executed_full_xctest"], 65)
+                    self.assertEqual(summary["executed_full_xctest"], 76)
                     self.assertEqual(summary["executed_full_swift_testing"], 31)
                 elif scenario == "missing_swift_report":
                     self.assertFalse((evidence / "full-swift-testing.xml").exists())
@@ -517,11 +517,11 @@ else:
             {
                 "swift-testing": 31,
                 "swift_testing_module": "available",
-                "total": 96,
-                "xctest": 65,
+                "total": 107,
+                "xctest": 76,
             },
         )
-        self.assertEqual(len(swift_report.load_expected_tests(expected_path)), 96)
+        self.assertEqual(len(swift_report.load_expected_tests(expected_path)), 107)
 
         probe_path = self.root / "probe-cli.log"
         probe_path.write_text(

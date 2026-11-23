@@ -23,11 +23,11 @@ class PublicationReconciliationTests(unittest.TestCase):
         temp = tempfile.TemporaryDirectory(); self.addCleanup(temp.cleanup)
         self.root = Path(temp.name).resolve(); self.home = self.root/'home'; self.home.mkdir()
         self.repo = self.root/'repo'; self.repo.mkdir()
-        self.live = self.home/'Library/Application Support/Personal AI Monitor/core'
+        self.live = self.home/'Library/Application Support/PSI/core'
         self.store = Store(self.live/'data/feedback'); self.addCleanup(self.store.close)
-        self.job = 'c'*24; self.app = self.root/'AGI.app'; (self.app/'Contents').mkdir(parents=True)
+        self.job = 'c'*24; self.app = self.root/'PSI.app'; (self.app/'Contents').mkdir(parents=True)
         (self.app/'Contents/Info.plist').write_bytes(b'synthetic paired marker')
-        (self.app/'Contents/MacOS').mkdir();self.native=self.app/'Contents/MacOS/PersonalAIMonitor';self.native.write_bytes(b'synthetic native')
+        (self.app/'Contents/MacOS').mkdir();self.native=self.app/'Contents/MacOS/PSI';self.native.write_bytes(b'synthetic native')
         s=self.native.lstat();self.native_identity=(s.st_dev,s.st_ino,s.st_mode,s.st_uid,s.st_nlink,s.st_size,s.st_mtime_ns,s.st_ctime_ns)
         self.config = {'enabled':True,'python':sys.executable,'repository':str(self.repo),'live_core':str(self.live),'application':str(self.app)}
         self.store.set('config',self.config);self.store.set('autonomy',{'policy':POLICY,'paused':False})
@@ -51,8 +51,8 @@ class PublicationReconciliationTests(unittest.TestCase):
         atomic(self.runtime,packed({'runtime_restored':True,'errors':[],'at':300,'executor':{
             'release_controller_sha256':self.verification['accepted_guards']['release.py'],'recovery_storage_sha256':'f'*64}}))
         atomic(self.unexchanged,packed({'state':'no_new_exchange','candidate':str(self.candidate),
-            'candidate_app_stage':'/Applications/.AGI-feedback-99999999.app',
-            'candidate_code_stage':str(self.live.parent/'.AGI-publication-99999999'),
+            'candidate_app_stage':'/Applications/.PSI-feedback-99999999.app',
+            'candidate_code_stage':str(self.live.parent/'.PSI-publication-99999999'),
             'current_data_preserved':True,'previous_journal_sha256':None}))
         self.queue=WorkQueue(self.store); row=self.queue.enqueue('personal_system',p.PREFIX+'b'*64,'b'*64,'agi')
         self.row=self.queue.update(row['id'],'verifying',result={'job':self.job,'reservation':self.key,
@@ -200,10 +200,10 @@ class PublicationReconciliationTests(unittest.TestCase):
 class PublicationDiagnosticsTests(unittest.TestCase):
     def test_invalid_current_native_signature_is_not_an_accepted_pair(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root=Path(temporary).resolve();app=root/'AGI.app'
+            root=Path(temporary).resolve();app=root/'PSI.app'
             (app/'Contents/MacOS').mkdir(parents=True)
             (app/'Contents/Info.plist').write_bytes(b'synthetic info')
-            (app/'Contents/MacOS/PersonalAIMonitor').write_bytes(b'corrupt native')
+            (app/'Contents/MacOS/PSI').write_bytes(b'corrupt native')
             with (patch.dict(p.PROJECTS,{'agi':{'application':str(app)}}),
                   patch.object(p,'_installed_source'),
                   patch.object(p.subprocess,'run',side_effect=subprocess.CalledProcessError(1,'codesign')) as verify):

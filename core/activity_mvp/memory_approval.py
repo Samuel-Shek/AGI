@@ -27,7 +27,7 @@ from .memory_ledger import (
 )
 
 
-APPROVAL_DIR_RELATIVE_PATH = Path("Library/Application Support/Personal AI Monitor/memory-approvals")
+APPROVAL_DIR_RELATIVE_PATH = Path("Library/Application Support/PSI/memory-approvals")
 PLAN_TTL_MINUTES = 10
 DEFAULT_LIMIT = 40
 CONTROLLED_MEM0_WRITER_ENABLED = False

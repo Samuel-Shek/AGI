@@ -114,85 +114,124 @@ def read_active(store,active,operation):
         return value
 
 
-def scan_jsonl(store,source,max_files=20,max_lines=1500,*,active=None):
+def scan_jsonl(store,source,max_files=20,max_lines=1500,*,active=None,batch=None):
     from ..conversation_scope import bind
     active=bind(active or store.active)
     root=Path(source['path'])
     if not root.is_dir() or root.is_symlink() or root.stat().st_uid!=os.getuid():raise PermissionError('source_root_unavailable')
     cursor=json.loads(source['cursor']);since=store.get('config',{})['since']
+    seen_key='source_scan_seen:'+source['id'];seen=store.get(seen_key,{})
+    def file_key(path):return hashlib.sha256(str(path).encode()).hexdigest()
     pattern='*/*/*/*.jsonl' if source['platform']=='codex' else '*/*.jsonl'
-    files=sorted((p for p in root.glob(pattern) if p.stat().st_mtime>=since),key=lambda p:p.stat().st_mtime,reverse=True)
+    files=sorted((p for p in checked_paths(root.glob(pattern)) if p.stat().st_mtime>=since),
+        key=lambda p:(max(cursor.get(str(p.relative_to(root)),{}).get('scanned_at',0),seen.get(file_key(p),0)),-p.stat().st_mtime))
+    current_keys={file_key(p) for p in files};seen={k:v for k,v in seen.items() if k in current_keys}
+    def metadata_skipped(path):
+        # Ordering only: do not retain a newly rejected path or grant a cursor.
+        seen[file_key(path)]=time.time();store.set(seen_key,seen)
+        if batch is not None:batch.complete()
     scanned=added=0;pending=0
     for p in files:
         if not active():raise PermissionError('not_active')
+        if batch is not None and batch.yield_now():pending+=1;break
+        rel=str(p.relative_to(root))
         session_hint=p.stem[-36:] if source["platform"]=="codex" else p.stem
-        if personal_scope.company_stopped() and not source_metadata_admitted(session_hint,str(p)):continue
+        if personal_scope.company_stopped() and not source_metadata_admitted(session_hint,str(p)):
+            metadata_skipped(p)
+            continue
         from ..conversation_scope import earliest_observation
         conversation_since=earliest_observation(session_hint,str(p),since)
-        st=_owned_regular(p);rel=str(p.relative_to(root));prior=cursor.get(rel,{})
-        if prior.get('inode')==st.st_ino and prior.get('size')==st.st_size:continue
+        st=_owned_regular(p);prior=cursor.get(rel,{})
+        if prior.get('inode')==st.st_ino and prior.get('size')==st.st_size and prior.get('mtime_ns')==st.st_mtime_ns:
+            prior['scanned_at']=time.time()
+            if batch is not None:batch.complete()
+            continue
         if scanned>=max_files:pending+=1;continue
-        offset=prior.get('offset',0) if prior.get('inode')==st.st_ino and st.st_size>=prior.get('offset',0) else 0
+        rewritten=prior.get('size')==st.st_size and prior.get('mtime_ns')!=st.st_mtime_ns
+        offset=prior.get('offset',0) if not rewritten and prior.get('inode')==st.st_ino and st.st_size>=prior.get('offset',0) else 0
         # Content prefix detects in-place rotation/rewrite; stable appends retain cursor.
         with p.open('rb') as f:
             if personal_scope.company_stopped() and source['platform']=='codex':
                 header=json.loads(read_active(store,active,lambda:f.readline(MAX_LINE+1)))
-                if header.get('type')!='session_meta' or not source_metadata_admitted(header.get('payload',{}).get('id'),str(p)):continue
+                if header.get('type')!='session_meta' or not source_metadata_admitted(header.get('payload',{}).get('id'),str(p)):
+                    metadata_skipped(p)
+                    continue
                 f.seek(0)
             prefix=hashlib.sha256(read_active(store,active,lambda:f.read(min(256,prior.get('prefix_len',256))))).hexdigest()
             if prior.get('prefix') and prefix!=prior['prefix']:offset=0
-            f.seek(offset);previous=prior.get('context','');session=prior.get('session','');lines=0
-            while lines<max_lines:
-                start=f.tell();raw=read_active(store,active,lambda:f.readline(MAX_LINE+1))
-                if not raw:break
-                if len(raw)>MAX_LINE:
-                    while raw and not raw.endswith(b'\n'):raw=read_active(store,active,lambda:f.readline(MAX_LINE+1))
-                    lines+=1;continue
-                if not raw.endswith(b'\n'):f.seek(start);break
-                lines+=1
-                try:d=json.loads(raw)
-                except (ValueError,UnicodeDecodeError):continue
-                when=timestamp(d.get('timestamp'));role='';content=''
-                if d.get('type')!='session_meta' and (when is None or when<conversation_since):continue
-                if source['platform']=='codex':
-                    if d.get('type')=='session_meta':
-                        meta=d.get('payload',{});session=meta.get('id','')
-                        origin=meta.get('source','')
-                        # Agent/background transcripts are not owner input.
-                        if isinstance(origin,dict) or origin in {'subagent','exec'}:session='excluded'
-                    if session=='excluded':continue
-                    q=d.get('payload',{})
-                    # Non-message events never reach text extraction. Keep the
-                    # fresh native admission at the actual message boundary,
-                    # rather than repeating it for every progress/tool event.
-                    if d.get('type')!='response_item' or q.get('type')!='message':continue
-                    if personal_scope.company_stopped() and not source_metadata_admitted(session,str(p)):continue
-                    role=q.get('role');content=_text(q.get('content'))
-                else:
-                    if d.get('isSidechain') or d.get('userType') not in (None,'external') or d.get('type') not in {'user','assistant'}:continue
-                    if d.get('isMeta'):continue
-                    session=d.get('sessionId','')
-                    if personal_scope.company_stopped() and not source_metadata_admitted(session,str(p)):continue
-                    role=d.get('message',{}).get('role');content=_text(d.get('message',{}).get('content'))
-                if role=='user':
-                    added+=insert(store,source,session,when,content,previous,{'path':str(p),'offset':start,'sha256':hashlib.sha256(raw).hexdigest()})
-                if role in {'assistant','user'}:
-                    safe=direct_text(content)
-                    if safe:previous=context_features(safe)
-            offset=f.tell();f.seek(0);head=read_active(store,active,lambda:f.read(min(256,st.st_size)))
-        cursor[rel]={'inode':st.st_ino,'size':st.st_size if offset>=st.st_size else -1,'offset':offset,
+            f.seek(offset);previous=prior.get('context','') if offset else '';session=prior.get('session','') if offset else '';lines=0
+            position=f.tell();f.seek(0)
+            head=read_active(store,active,lambda:f.read(min(256,st.st_size)));f.seek(position)
+            attempted=False
+            def save_cursor(position,context,session):
+                cursor[rel]={'scanned_at':time.time() if attempted else prior.get('scanned_at',0),'inode':st.st_ino,'mtime_ns':st.st_mtime_ns,'size':st.st_size if position>=st.st_size else -1,'offset':position,
+                    'prefix':hashlib.sha256(head).hexdigest(),'prefix_len':len(head),'session':session,'context':context}
+                store.conn.execute("UPDATE sources SET cursor=?,status='backfill' WHERE id=?",(packed(cursor),source['id']))
+            start=position;safe_context=previous;safe_session=session
+            try:
+                while lines<max_lines:
+                    if batch is not None and batch.yield_now():pending+=1;break
+                    attempted=True
+                    start=f.tell();safe_context=previous;safe_session=session
+                    raw=read_active(store,active,lambda:f.readline(MAX_LINE+1))
+                    if not raw:
+                        if batch is not None:batch.complete()
+                        break
+                    if len(raw)>MAX_LINE:
+                        while raw and not raw.endswith(b'\n'):raw=read_active(store,active,lambda:f.readline(MAX_LINE+1))
+                        if not raw.endswith(b'\n'):f.seek(start);break
+                        if batch is not None:batch.complete()
+                        lines+=1;continue
+                    if not raw.endswith(b'\n'):f.seek(start);break
+                    if batch is not None:batch.complete()
+                    lines+=1
+                    try:d=json.loads(raw)
+                    except (ValueError,UnicodeDecodeError):continue
+                    when=timestamp(d.get('timestamp'));role='';content=''
+                    if d.get('type')!='session_meta' and (when is None or when<conversation_since):continue
+                    if source['platform']=='codex':
+                        if d.get('type')=='session_meta':
+                            meta=d.get('payload',{});session=meta.get('id','')
+                            origin=meta.get('source','')
+                            # Agent/background transcripts are not owner input.
+                            if isinstance(origin,dict) or origin in {'subagent','exec'}:session='excluded'
+                        if session=='excluded':continue
+                        q=d.get('payload',{})
+                        # Non-message events never reach text extraction. Keep the
+                        # fresh native admission at the actual message boundary,
+                        # rather than repeating it for every progress/tool event.
+                        if d.get('type')!='response_item' or q.get('type')!='message':continue
+                        if personal_scope.company_stopped() and not source_metadata_admitted(session,str(p)):continue
+                        role=q.get('role');content=_text(q.get('content'))
+                    else:
+                        if d.get('isSidechain') or d.get('userType') not in (None,'external') or d.get('type') not in {'user','assistant'}:continue
+                        if d.get('isMeta'):continue
+                        session=d.get('sessionId','')
+                        if personal_scope.company_stopped() and not source_metadata_admitted(session,str(p)):continue
+                        role=d.get('message',{}).get('role');content=_text(d.get('message',{}).get('content'))
+                    if role=='user':
+                        added+=insert(store,source,session,when,content,previous,{'path':str(p),'offset':start,'sha256':hashlib.sha256(raw).hexdigest()})
+                    if role in {'assistant','user'}:
+                        safe=direct_text(content)
+                        if safe:previous=context_features(safe)
+            except LocalCheckTimeout:
+                save_cursor(start,safe_context,safe_session)
+                raise
+            offset=f.tell()
+            save_cursor(offset,previous,session)
+        cursor[rel]={'scanned_at':time.time() if attempted else prior.get('scanned_at',0),'inode':st.st_ino,'mtime_ns':st.st_mtime_ns,'size':st.st_size if offset>=st.st_size else -1,'offset':offset,
                      'prefix':hashlib.sha256(head).hexdigest(),'prefix_len':len(head),'session':session,'context':previous}
         scanned+=1
         if offset<st.st_size:pending+=1
     return cursor,added,{'changed_files_scanned':scanned,'pending_files':pending,'status':'backfill' if pending else 'current'}
 
-def scan_hermes(store,source,limit=1000,*,active=None):
+def scan_hermes(store,source,limit=1000,*,active=None,batch=None):
     from ..conversation_scope import bind
     active=bind(active or store.active)
     path=Path(source['path']);_owned_regular(path)
-    cursor=json.loads(source['cursor']);positions=cursor.get('sessions',{})
+    cursor=json.loads(source['cursor']);positions=cursor.get('sessions',{});seen=cursor.get('seen',{})
     conf=store.get('config',{});trusted=conf.get('hermes_owner_ids',{})
-    db=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=.1);db.row_factory=sqlite3.Row
+    db=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=.1);db.row_factory=sqlite3.Row;db=Connection(db)
     try:
         cols={r[1] for r in db.execute('PRAGMA table_info(messages)')}
         if not {'id','session_id','role','content','timestamp'}<=cols:raise ValueError('source_schema_changed')
@@ -211,44 +250,72 @@ def scan_hermes(store,source,limit=1000,*,active=None):
             else:excluded+=1
         added=0;pending=False
         # Query only already authenticated sessions; unrelated bodies never enter the process.
-        for session in allowed:
+        for session in sorted(allowed,key=lambda value:(seen.get(value,0),value)):
+            if batch is not None and batch.yield_now():pending=True;break
             last=positions.get(session,0)
             maximum=last
             from ..conversation_scope import earliest_observation
             conversation_since=earliest_observation(session,str(path),conf['since'])
             rows=read_active(store,active,lambda:db.execute('SELECT id,role,content,timestamp FROM messages WHERE session_id=? AND id>? AND timestamp>=? ORDER BY id LIMIT ?',
                 (session,last,conversation_since,limit)).fetchall())
-            for row in rows:
-                if not active():raise PermissionError('not_active')
-                maximum=max(maximum,row['id'])
-                if row['role']!='user':continue
-                content=row['content']
-                try:content=_text(json.loads(content))
-                except (ValueError,TypeError):pass
-                added+=insert(store,source,session,timestamp(row['timestamp']),content,'',{'path':str(path),'row':row['id'],'sha256':digest(str(row['content']))})
+            attempted=False
+            try:
+                for row in rows:
+                    if not active():raise PermissionError('not_active')
+                    if batch is not None and batch.yield_now():pending=True;break
+                    attempted=True
+                    if batch is not None:batch.complete()
+                    if row['role']!='user':
+                        maximum=max(maximum,row['id']);continue
+                    content=row['content']
+                    try:content=_text(json.loads(content))
+                    except (ValueError,TypeError):pass
+                    added+=insert(store,source,session,timestamp(row['timestamp']),content,'',{'path':str(path),'row':row['id'],'sha256':digest(str(row['content']))})
+                    maximum=max(maximum,row['id'])
+            except LocalCheckTimeout:
+                positions[session]=maximum
+                if attempted:seen[session]=time.time()
+                store.conn.execute("UPDATE sources SET cursor=?,status='backfill' WHERE id=?",(packed({'sessions':positions,'seen':seen}),source['id']))
+                raise
             positions[session]=maximum
+            if attempted or not rows:seen[session]=time.time()
+            if not rows and batch is not None:batch.complete()
+            store.conn.execute("UPDATE sources SET cursor=?,status='backfill' WHERE id=?",(packed({'sessions':positions,'seen':seen}),source['id']))
             pending|=len(rows)==limit
         # A global id cursor must not skip a capped older session.
-        if pending:return {'sessions':positions},added,{'pending_sessions':True,'identity_excluded':excluded,'status':'backfill'}
-        return {'sessions':positions},added,{'identity_excluded':excluded,'owner_sessions':len(allowed),'status':'partial_identity' if excluded else ('current' if allowed else 'no_owner_events')}
+        if pending:return {'sessions':positions,'seen':seen},added,{'pending_sessions':True,'identity_excluded':excluded,'status':'backfill'}
+        return {'sessions':positions,'seen':seen},added,{'identity_excluded':excluded,'owner_sessions':len(allowed),'status':'partial_identity' if excluded else ('current' if allowed else 'no_owner_events')}
     finally:db.close()
 
 def scan(store):
     from ..conversation_scope import bind
+    from ..local_checks import ScanBatch, SOURCE_SECONDS, scan_order
     active=bind(store.active)
     results=[]
-    for source in store.rows('SELECT * FROM sources ORDER BY platform,id'):
+    inventory=scan_order(store.rows('SELECT * FROM sources ORDER BY platform,id'),store.get('source_scan_next'))
+    batch=ScanBatch()
+    for index,source in enumerate(inventory):
         if not active():break
+        if batch.yield_now():break
+        store.set('source_scan_next',inventory[(index+1)%len(inventory)]['id'])
         try:
-            cursor,count,info=(scan_hermes(store,source,active=active) if source['platform']=='hermes' else scan_jsonl(store,source,active=active))
+            source_batch=ScanBatch(SOURCE_SECONDS,parent=batch)
+            cursor,count,info=(scan_hermes(store,source,active=active,batch=source_batch) if source['platform']=='hermes' else scan_jsonl(store,source,active=active,batch=source_batch))
             store.conn.execute('UPDATE sources SET cursor=?,status=?,detail=?,updated=? WHERE id=?',
                 (packed(cursor),info.pop('status'),packed(info),time.time(),source['id']))
             results.append({'source':source['id'],'added':count})
+            episodes=store.get('source_failure_episodes',{})
+            if source['id'] in episodes:
+                del episodes[source['id']];store.set('source_failure_episodes',episodes)
         except (OSError,ValueError,sqlite3.Error) as e:
             code=type(e).__name__
-            if source['status']!='unavailable':store.notify('source-'+source['id']+'-'+str(source['updated']),'source_unavailable')
+            episodes=store.get('source_failure_episodes',{})
+            episode=episodes.setdefault(source['id'],{'started':source['updated'],'failures':0})
+            episode['failures']+=1;store.set('source_failure_episodes',episodes)
+            if episode['failures']==3:store.notify('source-'+source['id']+'-'+str(episode['started']),'source_unavailable')
             store.conn.execute('UPDATE sources SET status=?,detail=?,updated=? WHERE id=?',('unavailable',code,time.time(),source['id']))
             results.append({'source':source['id'],'error':code})
+        batch.complete()
     return results
 
 
@@ -264,6 +331,7 @@ def reference_is_current(message):
             return hashlib.sha256(raw).hexdigest()==ref['sha256']
         if 'row' in ref:
             conn=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=.1)
+            conn=Connection(conn)
             try:
                 row=conn.execute('SELECT content FROM messages WHERE id=?',(ref['row'],)).fetchone()
                 return bool(row) and digest(str(row[0]))==ref['sha256']
@@ -294,3 +362,5 @@ def incident_admitted(store,incident_id):
     if not personal_scope.company_stopped():return True
     rows=store.rows("SELECT m.session,m.source_id,CASE WHEN json_valid(m.reference) THEN json_extract(m.reference,'$.path') END AS path FROM messages m JOIN quotes q ON q.message_id=m.id WHERE q.incident_id=?",(incident_id,))
     return bool(rows) and all(source_metadata_admitted(r['session'],r['path'],r['source_id']) for r in rows)
+
+from ..local_checks import LocalCheckTimeout, checked_paths, Connection

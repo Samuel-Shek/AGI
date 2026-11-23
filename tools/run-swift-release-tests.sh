@@ -185,11 +185,18 @@ run_swift_test() {
   fi
 }
 
-run_swift_test "$RUN_OUTPUT" "$RUN_STATUS" \
-  swift test "${SWIFT_ARGS[@]}" \
-    --parallel --num-workers 1 \
-    --disable-swift-testing --filter Phase2ContextModelsTests \
-    --xunit-output "$RUN_XUNIT"
+# Xcode 15.4's swift test has no Swift Testing switch. Later toolchains
+# need --disable-swift-testing so this filtered XCTest pass does not also
+# run Swift Testing.
+FILTERED_SWIFT_TEST=(
+  swift test "${SWIFT_ARGS[@]}"
+  --parallel --num-workers 1
+)
+if [[ "$SWIFT_TESTING_MODULE" == "available" ]]; then
+  FILTERED_SWIFT_TEST+=(--disable-swift-testing)
+fi
+FILTERED_SWIFT_TEST+=(--filter Phase2ContextModelsTests --xunit-output "$RUN_XUNIT")
+run_swift_test "$RUN_OUTPUT" "$RUN_STATUS" "${FILTERED_SWIFT_TEST[@]}"
 executed_xctest_count="$(python3 "$ROOT_DIR/tools/verify_swift_test_report.py" \
   --report "$RUN_XUNIT" --log "$RUN_OUTPUT" --minimum "$xctest_count" \
   --expected-tests "$EXPECTED_TESTS" --expected-kind xctest \

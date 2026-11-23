@@ -1,4 +1,5 @@
 """Parent source exclusions never rewrite child history or personal siblings."""
+from tests.closure_legacy_fixture import legacy_begin
 import json
 import io
 from pathlib import Path
@@ -32,7 +33,7 @@ class ClosureSourceInheritanceTests(unittest.TestCase):
         self.policy.chmod(0o600)
 
     def item(self, key, objective):
-        task = self.store.begin({'platform': 'codex', 'session': 'synthetic-inheritance',
+        task = legacy_begin(self.store, {'platform': 'codex', 'session': 'synthetic-inheritance',
             'turn': key, 'objective': objective, 'scope_root': str(self.root), 'complex': True})['task_id']
         return self.store.register({'task_id': task, 'category': 'related', 'key': key,
             'summary': 'Generic decision', 'target_root': str(self.root),

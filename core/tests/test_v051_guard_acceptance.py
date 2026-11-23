@@ -310,8 +310,19 @@ class V051DocumentSignalCollisionGovernanceTests(unittest.TestCase):
         self.assertEqual([row["name"] for row in self.conn.execute("PRAGMA table_info(document_signals)")], columns_before)
         self.assertEqual(
             int(self.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]),
-            SCHEMA_VERSION,
+            32,
         )
+
+    def test_schema32_manifest_remains_reversible_after_document_schema33_activation(self):
+        preview = preview_document_signal_identity_collisions(self.conn, historical_cutoff=HISTORY_CUTOFF)
+        applied = apply_document_signal_identity_collisions(self.conn,
+            confirm_hash=preview['manifest_hash'], historical_cutoff=HISTORY_CUTOFF)
+        self.assertEqual(applied['schema_version'], 32)
+        self.conn.execute("UPDATE meta SET value='33' WHERE key='schema_version'")
+        self.conn.commit()
+        result = reverse_document_signal_identity_collisions(self.conn, manifest_hash=preview['manifest_hash'])
+        self.assertEqual(result['restored_count'], 3)
+        self.assertEqual(result['schema_version'], 33)
 
     def test_apply_rechecks_preview_hash_and_rolls_back_on_drift(self) -> None:
         preview = preview_document_signal_identity_collisions(

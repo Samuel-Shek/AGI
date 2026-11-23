@@ -26,7 +26,7 @@ def main():
     parser.add_argument('--owner-session')
     parser.add_argument('--owner-turn')
     args = parser.parse_args()
-    runtime = Path.home() / 'Library/Application Support/Personal AI Monitor/core'
+    runtime = Path.home() / 'Library/Application Support/PSI/core'
     database = runtime / 'data/feedback/feedback.sqlite'
     target = conversation_scope.policy_path()
     if args.action == 'revoke':
@@ -77,13 +77,13 @@ def main():
     # modules already loaded from the candidate checkout in this operator.
     verify = '''import sys,json,plistlib
 from pathlib import Path
-root=Path.home()/'Library/Application Support/Personal AI Monitor/core'
+root=Path.home()/'Library/Application Support/PSI/core'
 sys.path.insert(0,str(root))
 from activity_mvp.feedback.acceptance import release_ready
 from activity_mvp.feedback.release import core_hash
 from activity_mvp.feedback.store import Store
 with Store(root/'data/feedback',readonly=True) as store:
- print(json.dumps({'paired':core_hash(root)==plistlib.loads(Path('/Applications/AGI.app/Contents/Info.plist').read_bytes()).get('PAMCoreCodeHash'),'accepted':release_ready(store)}))
+ print(json.dumps({'paired':core_hash(root)==plistlib.loads(Path('/Applications/PSI.app/Contents/Info.plist').read_bytes()).get('PAMCoreCodeHash'),'accepted':release_ready(store)}))
 '''
     checked = subprocess.run([sys.executable, '-I', '-S', '-B', '-c', verify],
         capture_output=True, text=True, timeout=30)

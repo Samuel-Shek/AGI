@@ -360,6 +360,7 @@ class ReadView:
     def __init__(self, conn, scope, tables, personal_kind=None):
         self.raw = conn
         self.scope = scope
+        self.conversation_scope_kind = personal_kind
         self.views = {}
         conn.create_function("agi_display_visible", -1, scope.visible_row, deterministic=True)
         available = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -393,7 +394,7 @@ class ReadView:
         if personal_kind is not None:
             from types import SimpleNamespace
             policy = scope.policy_view()
-            from .conversation_scope import filtered, allowed, binding, authorization, _regular, _identity,view_predicates
+            from .conversation_scope import filtered, allowed, binding, authorization, _regular, _identity,view_predicates, _recent_observation_allowed
             grant_binding=binding()
             try:
                 volatile_paths={source['path'] for source in authorization()['sources'] if source['platform']=='hermes'}
@@ -426,6 +427,14 @@ class ReadView:
                         registered_cache[key] = 0
                 return registered_cache[key]
             conn.create_function('personal_registered_metadata', 2, admitted)
+            def legacy_observation(session, path):
+                # The old-window rule uses the same bound read policy as native
+                # admission, instead of resolving every policy root per turn.
+                return int(binding()==grant_binding and policy.unchanged()
+                    and policy.classify({'session_id':session,'path':path})=='personal')
+            conn.create_function('personal_legacy_observation', 2, legacy_observation)
+            conn.create_function('personal_conversation_observation', 3,
+                lambda session,path,observed:int(_recent_observation_allowed(observed) or legacy_observation(session,path)))
         if 'incidents' in self.views and {'quotes','messages'} <= available:
             self.views['incidents'] += (" AND NOT EXISTS(SELECT 1 FROM main.quotes q JOIN main.messages m ON m.id=q.message_id "
                 "WHERE q.incident_id=incidents.id AND agi_display_visible(m.quote,m.context,m.reference)=0)")

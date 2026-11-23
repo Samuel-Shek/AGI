@@ -212,14 +212,14 @@ private func productionDiagnosticsBusyPayload(
 }
 
 check(
-    AppTab.allCases == [.today, .reflection, .evolution, .confirmations, .fileHistory, .review, .memoryReview, .systemStatus, .privacy, .settings],
+    AppTab.allCases == [.today, .reflection, .evolution, .confirmations, .workbench, .fileHistory, .review, .memoryReview, .systemStatus, .privacy, .settings],
     "navigation must retain Confirmations while adding File History"
 )
 check(
-    AppTab.allCases.map(\.title) == ["今天", "思考与反思", "自主进化", "需要你决定", "记录", "回顾", "记忆库", "系统状态", "隐私与数据", "设置"],
+    AppTab.allCases.map(\.title) == ["今天", "思考与反思", "自主进化", "需要你决定", "事项工作台", "记录", "回顾", "记忆库", "系统状态", "隐私与数据", "设置"],
     "legacy destinations remain routable with clear decision and records labels"
 )
-check(AppTab.dailyTabs == [.today, .reflection, .confirmations, .fileHistory, .memoryReview, .evolution], "daily navigation groups decisions, records and memory")
+check(AppTab.dailyTabs == [.today, .reflection, .confirmations, .workbench, .fileHistory, .memoryReview, .evolution], "daily navigation groups decisions, records and memory")
 check(
     AppTab.managementTabs == [.systemStatus, .settings],
     "management navigation nests privacy in settings"
@@ -4101,5 +4101,9 @@ do {
         check(AttentionIssue(value) == nil, "unknown verification marker must be exact and cannot assert successful acceptance")
     }
 }
+
+
+check(AppTab.workbench.navigationGroup == .daily, "workbench is daily")
+check(!AppTab.allCases.contains { $0.title.contains("同步中心") }, "retired name absent")
 
 print("PAM interaction checks passed (\(completed) assertions).")

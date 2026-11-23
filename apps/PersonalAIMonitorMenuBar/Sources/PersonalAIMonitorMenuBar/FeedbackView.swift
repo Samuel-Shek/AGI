@@ -29,6 +29,7 @@ final class FeedbackModel: ObservableObject {
     @Published var message = ""
     @Published var journal = ""
     @Published var analysisProblem = ""
+    @Published var localCheckProgress = ""
     @Published var repair = "自动修复尚未验收"
     @Published var analysis = "模型通道尚未验收"
     @Published var lastReview = "尚未复查"
@@ -36,13 +37,23 @@ final class FeedbackModel: ObservableObject {
     @Published var budget = ""
     var attentionCount: Int { progress?.decisions ?? incidents.filter { FeedbackDecisionPresentation.requiresHuman(state: $0.phase) }.count }
 
+    private var lastLoadedAt: Date?
+
+    /// Card appearance reuses a status read that is running or finished moments ago.
+    func refreshIfStale(_ runner: CoreRunner, maxAge: TimeInterval = 10) async {
+        if busy { return }
+        if let lastLoadedAt, Date().timeIntervalSince(lastLoadedAt) < maxAge { return }
+        await refresh(runner)
+    }
+
     func refresh(_ runner: CoreRunner) async {
         guard !busy else { return }; busy = true; defer { busy = false }
         let raw = await runner.feedbackRequest("status")
         guard let value = Self.decode(raw), value["status"] as? String == "ok" else {
+            lastLoadedAt = nil
             progress = nil; autonomy = nil; incidents = []; sources = []; enabled = false; paused = true
             journal = ""; repair = "暂不可读"; analysis = "暂不可读"; budget = "暂不可读"
-            pending = 0; lastTick = "暂不可读"; lastReview = "暂不可读"; analysisProblem = ""
+            pending = 0; lastTick = "暂不可读"; lastReview = "暂不可读"; analysisProblem = ""; localCheckProgress = ""
             message = "批评与改进暂不可读取；不能据此判断没有待办。"; return
         }
         progress = (value["progress"] as? [String: Any]).flatMap(FeedbackProgress.init)
@@ -53,6 +64,21 @@ final class FeedbackModel: ObservableObject {
         pending = value["pending_messages"] as? Int ?? 0
         let lastError = value["last_error"] as? String ?? ""
         let control = value["analysis_control"] as? [String: Any] ?? [:]
+        let local = value["local_checks"] as? [String: Any] ?? [:]
+        if let label = local["label"] as? String, let checked = local["checked_at"] as? Double {
+            let checkedText = Date(timeIntervalSince1970: checked).formatted(date: .abbreviated, time: .standard)
+            switch local["status"] as? String {
+            case "deferred":
+                localCheckProgress = "\(label)已达到本轮检查时限，暂缓后续处理。已完成的读取进度保留，等待原巡检再次检查。检查时间：\(checkedText)。"
+            case "running":
+                localCheckProgress = "上次记录：正在\(label)。记录时间：\(checkedText)；当前进度以再次检查为准。"
+            case "failed":
+                localCheckProgress = "\(label)未完成，原记录保留，等待核对。检查时间：\(checkedText)。"
+            case "completed":
+                localCheckProgress = "本阶段检查结束：\(label)。检查时间：\(checkedText)。"
+            default: localCheckProgress = ""
+            }
+        } else { localCheckProgress = "" }
         let retryAt = control["next_retry_at"] as? Double ?? 0
         let retryText = retryAt > Date().timeIntervalSince1970 ? "预计 \(Date(timeIntervalSince1970: retryAt).formatted(date: .omitted, time: .shortened)) 后重试。" : "后台会继续分批处理。"
         if lastError == "account_rate_limited" {
@@ -80,6 +106,7 @@ final class FeedbackModel: ObservableObject {
         budget = (value["budget"] as? [[String: Any]] ?? []).map { row in
             "\(row["kind"] as? String == "analysis" ? "分析" : "修复") \(row["used"] as? Int ?? 0) 次"
         }.joined(separator: " · ")
+        lastLoadedAt = Date()
     }
     func control(_ action: String, runner: CoreRunner) async {
         guard !controlBusy && !busy else { return }
@@ -90,7 +117,7 @@ final class FeedbackModel: ObservableObject {
         }
         await refresh(runner)
     }
-    static func decode(_ raw: String) -> [String: Any]? {
+    nonisolated static func decode(_ raw: String) -> [String: Any]? {
         raw.data(using: .utf8).flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] }
     }
 }
@@ -112,6 +139,7 @@ struct FeedbackView: View {
                     Text("\(progress.total) 件已收录 · \(progress.pending) 条待分析 · \(model.attentionCount) 件需要你选择").foregroundStyle(.secondary)
                 }
                 Text("最近收录：\(model.lastTick)；每日复查：\(model.lastReview)").font(.caption).foregroundStyle(.secondary)
+                if !model.localCheckProgress.isEmpty { Text(model.localCheckProgress).font(.caption).foregroundStyle(.secondary) }
                 DisclosureGroup("来源与自动处理范围") {
                     VStack(alignment: .leading, spacing: 5) {
                         ForEach(model.sources, id: \.self) { Text($0) }
@@ -279,7 +307,7 @@ struct FeedbackTodayCard: View {
             }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
         }.task {
             while !Task.isCancelled {
-                await model.refresh(runner)
+                await model.refreshIfStale(runner)
                 do { try await Task.sleep(nanoseconds: 30_000_000_000) } catch { break }
             }
         }

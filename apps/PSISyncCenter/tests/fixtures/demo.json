@@ -1,0 +1,613 @@
+{
+  "synthetic": true,
+  "fixture_clock": "now",
+  "snapshot": {
+    "interface": "attention-center",
+    "contract": 1,
+    "status": "ok",
+    "generated_at": "2026-11-09T12:00:00+00:00",
+    "revision": "synthetic-v1",
+    "display_scope_revision": "synthetic-scope-v1",
+    "decision_count": 6,
+    "system_count": 2,
+    "resource_count": 3,
+    "decisions": [
+      {
+        "id": "demo-preference",
+        "title": "合成问题：个人资料应该优先用于日常回顾还是长期归档，以及不同用途下保留哪些说明",
+        "kind": "activity",
+        "state": "pending",
+        "requires_decision": true,
+        "revision": "synthetic-v1",
+        "summary": "合成验收数据，不来自真实活动。",
+        "background": "这是一份虚构的个人资料整理问题，用于核验工作台三栏布局。",
+        "reason": "资料用途属于个人取舍，现有证据不能替你作答。",
+        "completion_rule": "得到本人明确选择，实际执行还需另行核对结果。",
+        "card": {
+          "event_type": "personal_preference",
+          "verification_route": "user_confirmation",
+          "display_evidence": "这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。",
+          "display_title": "合成问题：个人资料应该优先用于日常回顾还是长期归档，以及不同用途下保留哪些说明",
+          "display_question": "这些资料你想用于日常回顾还是长期归档？",
+          "answer_options": [
+            "用于日常回顾",
+            "用于长期归档"
+          ]
+        }
+      },
+      {
+        "id": "demo-event",
+        "title": "合成问题：这次个人计划是否已经完成",
+        "kind": "activity",
+        "state": "pending",
+        "requires_decision": true,
+        "revision": "synthetic-v1",
+        "summary": "合成验收数据，不来自真实活动。",
+        "background": "合成记录显示计划曾被打开，不能据此认定完成。",
+        "reason": "实际完成情况只有本人知道。",
+        "completion_rule": "本人补充实际结果。",
+        "card": {
+          "event_type": "completion",
+          "verification_route": "user_confirmation",
+          "display_evidence": "只观察到合成的计划记录，没有完成回执。",
+          "display_title": "合成问题：这次个人计划是否已经完成",
+          "display_question": "这次个人计划是否已经完成？",
+          "answer_options": [
+            {
+              "label": "已经完成"
+            },
+            {
+              "label": "尚未完成"
+            },
+            "记不清"
+          ]
+        }
+      },
+      {
+        "id": "demo-choice",
+        "title": "合成复盘节奏需要本人选择",
+        "kind": "closure",
+        "state": "decision",
+        "requires_decision": true,
+        "revision": "synthetic-v1",
+        "summary": "合成验收数据，不来自真实活动。",
+        "background": "虚构的复盘偏好待确认。",
+        "reason": "个人节奏不能从技术运行记录推断。",
+        "recommendation": "由本人选择每周一次的节奏，实际安排另行确认。",
+        "completion_rule": "记录本人选择，并区分意愿与已安排事实。",
+        "card": {
+          "event_type": "personal_preference",
+          "verification_route": "user_confirmation"
+        }
+      }
+    ],
+    "closures": [
+      {
+        "id": "demo-verification",
+        "title": "合成核验：等待新证据核对",
+        "kind": "closure",
+        "state": "verification",
+        "requires_decision": false,
+        "revision": "synthetic-v1",
+        "summary": "合成验收数据，不来自真实活动。",
+        "background": "已进入来源侧核验阶段。",
+        "completion_rule": "来源返回本次核验的成功依据。"
+      },
+      {
+        "id": "demo-blocked",
+        "title": "合成等待：来源条件尚未满足",
+        "kind": "closure",
+        "state": "blocked",
+        "requires_decision": false,
+        "revision": "synthetic-v1",
+        "summary": "合成验收数据，不来自真实活动。",
+        "reason": "需要新的来源记录。"
+      },
+      {
+        "id": "demo-pending",
+        "title": "合成等待：尚未进入核验",
+        "kind": "closure",
+        "state": "pending",
+        "requires_decision": false,
+        "revision": "synthetic-v1",
+        "summary": "合成验收数据，不来自真实活动。",
+        "reason": "来源侧尚未给出核验时间。"
+      },
+      {
+        "id": "demo-closed",
+        "title": "合成收口：样例记录已核对",
+        "kind": "closure",
+        "state": "complete",
+        "requires_decision": false,
+        "revision": "synthetic-v1",
+        "summary": "合成验收数据，不来自真实活动。",
+        "completion_rule": "此合成样例提供了完整的核验结果。"
+      },
+      {
+        "id": "demo-signature",
+        "title": "合成签名材料已经准备完成",
+        "background": "合成签名材料已经准备完成",
+        "kind": "closure",
+        "state": "decision",
+        "requires_decision": true,
+        "revision": "synthetic-v2",
+        "summary": "待你决定 · 负责人：<agent:11111111-2222-3333-4444-555555555555>",
+        "recommendation": "由本人完成签名，仅限这份合成材料，签名前需本人核对内容。",
+        "impact": "合成状态等待记录",
+        "inaction": "合成状态等待记录"
+      },
+      {
+        "id": "demo-technical",
+        "title": "合成服务校验失败",
+        "background": "合成服务校验失败",
+        "kind": "closure",
+        "state": "decision",
+        "requires_decision": true,
+        "revision": "synthetic-v2",
+        "summary": "待你决定 · 负责人：<agent:11111111-2222-3333-4444-555555555555>",
+        "recommendation": "由助手检查配置并重新校验，无需本人签名。",
+        "impact": "合成状态等待记录",
+        "inaction": "合成状态等待记录"
+      }
+    ],
+    "systems": [
+      {
+        "id": "demo-system-1",
+        "title": "合成系统：读取进程",
+        "kind": "system",
+        "state": "running",
+        "requires_decision": false,
+        "revision": "synthetic-v1",
+        "summary": "合成验收数据，不来自真实活动。",
+        "runtime": {
+          "phase": "合成运行中"
+        },
+        "reason": "仅用于展示进程卡片。"
+      },
+      {
+        "id": "demo-system-2",
+        "title": "合成系统：维护状态",
+        "kind": "system",
+        "state": "idle",
+        "requires_decision": false,
+        "revision": "synthetic-v1",
+        "summary": "合成验收数据，不来自真实活动。",
+        "recovery": {
+          "status": "合成空闲，无维护动作"
+        },
+        "reason": "只读展示，不执行维护。"
+      }
+    ],
+    "resources": [
+      {
+        "id": "demo-source-1",
+        "title": "合成来源：活动摘要",
+        "kind": "reference",
+        "state": "pending",
+        "requires_decision": false,
+        "revision": "synthetic-v1",
+        "summary": "合成验收数据，不来自真实活动。"
+      },
+      {
+        "id": "demo-source-2",
+        "title": "合成来源：证据资料",
+        "kind": "reference",
+        "state": "pending",
+        "requires_decision": false,
+        "revision": "synthetic-v1",
+        "summary": "合成验收数据，不来自真实活动。"
+      },
+      {
+        "id": "demo-history",
+        "title": "合成来源：历史问题",
+        "kind": "historical_questions",
+        "state": "pending",
+        "requires_decision": false,
+        "revision": "synthetic-v1",
+        "summary": "合成验收数据，不来自真实活动。",
+        "children": [
+          {
+            "id": "demo-history-child",
+            "title": "合成历史：上一次资料核对",
+            "kind": "activity",
+            "state": "complete",
+            "requires_decision": false,
+            "revision": "synthetic-v1",
+            "summary": "合成验收数据，不来自真实活动。",
+            "background": "保留历史子项，不依赖父项数量字段。"
+          },
+          {
+            "id": "demo-history-pending",
+            "title": "合成历史活动核对",
+            "kind": "activity",
+            "state": "pending",
+            "requires_decision": true,
+            "revision": "synthetic-v2",
+            "summary": "待你决定 · 负责人：codex:11111111-2222-3333-4444-555555555555",
+            "card": {
+              "display_title": "合成历史：是否参加了读书活动",
+              "display_question": "你参加这次读书活动了吗？",
+              "display_evidence": "合成记录只有活动计划，没有参加回执。",
+              "answer_options": [
+                "参加了",
+                "没有参加",
+                "记不清"
+              ],
+              "time_label": "11月9日",
+              "priority": "normal"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "details": {
+    "demo-preference": {
+      "interface": "attention-center",
+      "contract": 1,
+      "status": "ok",
+      "item": {
+        "id": "demo-preference",
+        "title": "合成问题：个人资料应该优先用于日常回顾还是长期归档，以及不同用途下保留哪些说明",
+        "kind": "activity",
+        "state": "pending",
+        "requires_decision": true,
+        "revision": "synthetic-v1",
+        "summary": "合成验收数据，不来自真实活动。",
+        "background": "这是一份虚构的个人资料整理问题，用于核验工作台三栏布局。",
+        "reason": "资料用途属于个人取舍，现有证据不能替你作答。",
+        "completion_rule": "得到本人明确选择，实际执行还需另行核对结果。",
+        "card": {
+          "event_type": "personal_preference",
+          "verification_route": "user_confirmation",
+          "display_evidence": "这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。这段合成证据用于检验长文本的换行与滚动。已知的是样例记录被整理为一个问题；实际意愿仍需由使用者说明。",
+          "display_title": "合成问题：个人资料应该优先用于日常回顾还是长期归档，以及不同用途下保留哪些说明",
+          "display_question": "这些资料你想用于日常回顾还是长期归档？",
+          "answer_options": [
+            "用于日常回顾",
+            "用于长期归档"
+          ]
+        }
+      }
+    },
+    "demo-event": {
+      "interface": "attention-center",
+      "contract": 1,
+      "status": "ok",
+      "item": {
+        "id": "demo-event",
+        "title": "合成问题：这次个人计划是否已经完成",
+        "kind": "activity",
+        "state": "pending",
+        "requires_decision": true,
+        "revision": "synthetic-v1",
+        "summary": "合成验收数据，不来自真实活动。",
+        "background": "合成记录显示计划曾被打开，不能据此认定完成。",
+        "reason": "实际完成情况只有本人知道。",
+        "completion_rule": "本人补充实际结果。",
+        "card": {
+          "event_type": "completion",
+          "verification_route": "user_confirmation",
+          "display_evidence": "只观察到合成的计划记录，没有完成回执。",
+          "display_title": "合成问题：这次个人计划是否已经完成",
+          "display_question": "这次个人计划是否已经完成？",
+          "answer_options": [
+            {
+              "label": "已经完成"
+            },
+            {
+              "label": "尚未完成"
+            },
+            "记不清"
+          ]
+        }
+      }
+    },
+    "demo-choice": {
+      "interface": "attention-center",
+      "contract": 1,
+      "status": "ok",
+      "item": {
+        "id": "demo-choice",
+        "title": "合成复盘节奏需要本人选择",
+        "kind": "closure",
+        "state": "decision",
+        "requires_decision": true,
+        "revision": "synthetic-v1",
+        "summary": "合成验收数据，不来自真实活动。",
+        "background": "虚构的复盘偏好待确认。",
+        "reason": "个人节奏不能从技术运行记录推断。",
+        "recommendation": "由本人选择每周一次的节奏，实际安排另行确认。",
+        "completion_rule": "记录本人选择，并区分意愿与已安排事实。",
+        "card": {
+          "event_type": "personal_preference",
+          "verification_route": "user_confirmation"
+        }
+      }
+    },
+    "demo-verification": {
+      "interface": "attention-center",
+      "contract": 1,
+      "status": "ok",
+      "item": {
+        "id": "demo-verification",
+        "title": "合成核验：等待新证据核对",
+        "kind": "closure",
+        "state": "verification",
+        "requires_decision": false,
+        "revision": "synthetic-v1",
+        "summary": "合成验收数据，不来自真实活动。",
+        "background": "已进入来源侧核验阶段。",
+        "completion_rule": "来源返回本次核验的成功依据。"
+      }
+    },
+    "demo-blocked": {
+      "interface": "attention-center",
+      "contract": 1,
+      "status": "ok",
+      "item": {
+        "id": "demo-blocked",
+        "title": "合成等待：来源条件尚未满足",
+        "kind": "closure",
+        "state": "blocked",
+        "requires_decision": false,
+        "revision": "synthetic-v1",
+        "summary": "合成验收数据，不来自真实活动。",
+        "reason": "需要新的来源记录。"
+      }
+    },
+    "demo-pending": {
+      "interface": "attention-center",
+      "contract": 1,
+      "status": "ok",
+      "item": {
+        "id": "demo-pending",
+        "title": "合成等待：尚未进入核验",
+        "kind": "closure",
+        "state": "pending",
+        "requires_decision": false,
+        "revision": "synthetic-v1",
+        "summary": "合成验收数据，不来自真实活动。",
+        "reason": "来源侧尚未给出核验时间。"
+      }
+    },
+    "demo-closed": {
+      "interface": "attention-center",
+      "contract": 1,
+      "status": "ok",
+      "item": {
+        "id": "demo-closed",
+        "title": "合成收口：样例记录已核对",
+        "kind": "closure",
+        "state": "complete",
+        "requires_decision": false,
+        "revision": "synthetic-v1",
+        "summary": "合成验收数据，不来自真实活动。",
+        "completion_rule": "此合成样例提供了完整的核验结果。"
+      }
+    },
+    "demo-system-1": {
+      "interface": "attention-center",
+      "contract": 1,
+      "status": "ok",
+      "item": {
+        "id": "demo-system-1",
+        "title": "合成系统：读取进程",
+        "kind": "system",
+        "state": "running",
+        "requires_decision": false,
+        "revision": "synthetic-v1",
+        "summary": "合成验收数据，不来自真实活动。",
+        "runtime": {
+          "phase": "合成运行中"
+        },
+        "reason": "仅用于展示进程卡片。"
+      }
+    },
+    "demo-system-2": {
+      "interface": "attention-center",
+      "contract": 1,
+      "status": "ok",
+      "item": {
+        "id": "demo-system-2",
+        "title": "合成系统：维护状态",
+        "kind": "system",
+        "state": "idle",
+        "requires_decision": false,
+        "revision": "synthetic-v1",
+        "summary": "合成验收数据，不来自真实活动。",
+        "recovery": {
+          "status": "合成空闲，无维护动作"
+        },
+        "reason": "只读展示，不执行维护。"
+      }
+    },
+    "demo-source-1": {
+      "interface": "attention-center",
+      "contract": 1,
+      "status": "ok",
+      "item": {
+        "id": "demo-source-1",
+        "title": "合成来源：活动摘要",
+        "kind": "reference",
+        "state": "pending",
+        "requires_decision": false,
+        "revision": "synthetic-v1",
+        "summary": "合成验收数据，不来自真实活动。"
+      }
+    },
+    "demo-source-2": {
+      "interface": "attention-center",
+      "contract": 1,
+      "status": "ok",
+      "item": {
+        "id": "demo-source-2",
+        "title": "合成来源：证据资料",
+        "kind": "reference",
+        "state": "pending",
+        "requires_decision": false,
+        "revision": "synthetic-v1",
+        "summary": "合成验收数据，不来自真实活动。"
+      }
+    },
+    "demo-history": {
+      "interface": "attention-center",
+      "contract": 1,
+      "status": "ok",
+      "item": {
+        "id": "demo-history",
+        "title": "合成来源：历史问题",
+        "kind": "historical_questions",
+        "state": "pending",
+        "requires_decision": false,
+        "revision": "synthetic-v1",
+        "summary": "合成验收数据，不来自真实活动。",
+        "children": [
+          {
+            "id": "demo-history-child",
+            "title": "合成历史：上一次资料核对",
+            "kind": "activity",
+            "state": "complete",
+            "requires_decision": false,
+            "revision": "synthetic-v1",
+            "summary": "合成验收数据，不来自真实活动。",
+            "background": "保留历史子项，不依赖父项数量字段。"
+          },
+          {
+            "id": "demo-history-pending",
+            "title": "合成历史活动核对",
+            "kind": "activity",
+            "state": "pending",
+            "requires_decision": true,
+            "revision": "synthetic-v2",
+            "summary": "待你决定 · 负责人：codex:11111111-2222-3333-4444-555555555555",
+            "card": {
+              "display_title": "合成历史：是否参加了读书活动",
+              "display_question": "你参加这次读书活动了吗？",
+              "display_evidence": "合成记录只有活动计划，没有参加回执。",
+              "answer_options": [
+                "参加了",
+                "没有参加",
+                "记不清"
+              ],
+              "time_label": "11月9日",
+              "priority": "normal"
+            }
+          }
+        ]
+      }
+    },
+    "demo-history-child": {
+      "interface": "attention-center",
+      "contract": 1,
+      "status": "ok",
+      "item": {
+        "id": "demo-history-child",
+        "title": "合成历史：上一次资料核对",
+        "kind": "activity",
+        "state": "complete",
+        "requires_decision": false,
+        "revision": "synthetic-v1",
+        "summary": "合成验收数据，不来自真实活动。",
+        "background": "保留历史子项，不依赖父项数量字段。"
+      }
+    },
+    "demo-signature": {
+      "interface": "attention-center",
+      "contract": 1,
+      "status": "ok",
+      "item": {
+        "id": "demo-signature",
+        "title": "合成签名材料已经准备完成",
+        "background": "合成签名材料已经准备完成",
+        "kind": "closure",
+        "state": "decision",
+        "requires_decision": true,
+        "revision": "synthetic-v2",
+        "summary": "待你决定 · 负责人：<agent:11111111-2222-3333-4444-555555555555>",
+        "recommendation": "由本人完成签名，仅限这份合成材料，签名前需本人核对内容。",
+        "impact": "合成状态等待记录",
+        "inaction": "合成状态等待记录"
+      }
+    },
+    "demo-technical": {
+      "interface": "attention-center",
+      "contract": 1,
+      "status": "ok",
+      "item": {
+        "id": "demo-technical",
+        "title": "合成服务校验失败",
+        "background": "合成服务校验失败",
+        "kind": "closure",
+        "state": "decision",
+        "requires_decision": true,
+        "revision": "synthetic-v2",
+        "summary": "待你决定 · 负责人：<agent:11111111-2222-3333-4444-555555555555>",
+        "recommendation": "由助手检查配置并重新校验，无需本人签名。",
+        "impact": "合成状态等待记录",
+        "inaction": "合成状态等待记录"
+      }
+    },
+    "demo-history-pending": {
+      "interface": "attention-center",
+      "contract": 1,
+      "status": "ok",
+      "item": {
+        "id": "demo-history-pending",
+        "title": "合成历史活动核对",
+        "kind": "activity",
+        "state": "pending",
+        "requires_decision": true,
+        "revision": "synthetic-v2",
+        "summary": "待你决定 · 负责人：codex:11111111-2222-3333-4444-555555555555",
+        "card": {
+          "display_title": "合成历史：是否参加了读书活动",
+          "display_question": "你参加这次读书活动了吗？",
+          "display_evidence": "合成记录只有活动计划，没有参加回执。",
+          "answer_options": [
+            "参加了",
+            "没有参加",
+            "记不清"
+          ],
+          "time_label": "11月9日",
+          "priority": "normal"
+        }
+      }
+    }
+  },
+  "synthetic_ui": {
+    "demo-preference": {
+      "plan": "合成方案：每周回顾一次个人资料，保留简短说明；没有执行任何操作。",
+      "messages": [
+        {
+          "author": "user",
+          "content": "合成示例：我想先用于日常回顾。",
+          "created_at": "2026-11-09T06:57:00+00:00",
+          "synthetic": true
+        },
+        {
+          "author": "ai",
+          "content": "合成示例：这条预置气泡只展示样式，不是模型回复。",
+          "created_at": "2026-11-09T06:57:00+00:00",
+          "synthetic": true,
+          "focused_questions": [
+            "合成：主要用于自己回顾吗？",
+            "合成：希望多久整理一次？"
+          ]
+        },
+        {
+          "author": "user",
+          "content": "合成示例：每周整理一次，保留简短说明。",
+          "created_at": "2026-11-09T06:57:00+00:00",
+          "synthetic": true
+        },
+        {
+          "author": "ai",
+          "content": "合成示例：候选方案为每周回顾一次；实际记录仍需确认。",
+          "created_at": "2026-11-09T06:57:00+00:00",
+          "synthetic": true
+        }
+      ]
+    }
+  }
+}

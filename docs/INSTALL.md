@@ -8,7 +8,7 @@ provided by cloning this repository.
 ## Requirements
 
 - macOS for the native app and platform-specific helpers.
-- Python 3.12 or later. The core has no mandatory third-party Python packages.
+- Python 3.12 or later for the CLI and fixture demo. The native workbench and live Core adapter look for the python.org Framework interpreter at `/Library/Frameworks/Python.framework/Versions/3.12/bin/python3`. The core has no mandatory third-party Python packages.
 - Swift 5.9 or later, with an Apple SDK or Xcode for native builds.
 
 ## Inspect without collecting
@@ -40,3 +40,13 @@ Starting collection, enabling a model, writing memory, or granting repair
 permissions are separate setup steps. Review the corresponding source and
 privacy documentation before opting in. This release does not configure those
 steps or install a background service for you.
+
+## Workbench demo
+
+From the repository root, start the local web workbench with synthetic data.
+Open the printed loopback URL. The command creates a separate directory for
+drafts. Press Ctrl+C to stop the demo.
+
+```bash
+python3 -B apps/PSISyncCenter/psi_sync_center.py --fixture apps/PSISyncCenter/tests/fixtures/demo.json --data-dir "$(mktemp -d)" --standalone --port 8767
+```

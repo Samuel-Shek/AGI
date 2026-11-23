@@ -38,12 +38,19 @@ class Store:
             fd=os.open(self.path,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600);os.close(fd)
         self.conn=sqlite3.connect(self.path.as_uri()+('?mode=ro' if readonly else '?mode=rwc'),uri=True,timeout=.5,isolation_level=None)
         self.conn.row_factory=sqlite3.Row
+        from ..local_checks import Connection
+        self.conn=Connection(self.conn)
         if readonly:
             self.conn.execute('PRAGMA query_only=ON')
             from ..presentation_scope import for_runtime,read_view
             self.conn=read_view(self.conn,for_runtime(self.root.parent),('insights','turns','retired_turns','contexts','retired_contexts','sources','notices','calls'),personal_kind='reflection')
         else:
             self.conn.execute('PRAGMA synchronous=FULL');self.conn.executescript(SCHEMA)
+            archived={r[0] for r in self.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if 'retired_turns' in archived:
+                self.conn.execute('CREATE INDEX IF NOT EXISTS retired_turns_context ON retired_turns(context_id,seq)')
+            if 'retired_contexts' in archived:
+                self.conn.execute('CREATE INDEX IF NOT EXISTS retired_contexts_id ON retired_contexts(id)')
     def __enter__(self): return self
     def __exit__(self,*args): self.conn.close()
     def rows(self,sql,args=()):return [dict(r) for r in self.conn.execute(sql,args)]

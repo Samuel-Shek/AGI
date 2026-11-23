@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import uuid
 from contextlib import nullcontext
 from datetime import date, datetime, time, timedelta
 from typing import Any
@@ -6031,13 +6032,21 @@ def _rollback_confirmation_transaction(
         conn.execute(f"RELEASE SAVEPOINT {savepoint}")
 
 
+def _clarification_save_key(group_key, member_revision, note, request_id):
+    body = json.dumps([group_key, member_revision, safe_decision_text(note, max_len=360), request_id], ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(body.encode()).hexdigest()
+
+
 def clarify_activity_confirmation_group(
     conn: sqlite3.Connection,
     *,
     group_key: str,
     member_revision: str,
     note: str = "",
+    save_request: str = "",
 ) -> dict[str, Any]:
+    if save_request and (not isinstance(save_request, str) or len(save_request) != 36 or str(uuid.UUID(save_request)) != save_request):
+        raise ValueError("invalid_save_request")
     with document_authorization_lock(
         conn,
         exclusive=False,
@@ -6179,12 +6188,13 @@ def clarify_activity_confirmation_group(
             "evidence_count": len(retained_evidence_ids),
             "available_source_count": len(retained_item_keys),
         }
-        return _clarify_activity_confirmation_group_locked(
+        result = _clarify_activity_confirmation_group_locked(
             conn,
             group_key=group_key,
             member_revision=member_revision,
             note=effective_note,
             note_was_supplied=bool(supplied_note),
+            save_key=_clarification_save_key(group_key, member_revision, supplied_note, save_request),
             ocr_safe_parts_by_item=ocr_safe_parts_by_item,
             evidence_context=evidence_context,
             ocr_retry_evidence_ids=ocr_retry_evidence_ids,
@@ -6192,6 +6202,9 @@ def clarify_activity_confirmation_group(
             privacy_reclassified_evidence_ids=privacy_reclassified_evidence_ids,
             invalid_evidence_ids=invalid_evidence_ids,
         )
+        if result.get("status") == "clarified":
+            result["save_request"] = save_request
+        return result
 
 
 def _clarify_activity_confirmation_group_locked(
@@ -6201,6 +6214,7 @@ def _clarify_activity_confirmation_group_locked(
     member_revision: str,
     note: str = "",
     note_was_supplied: bool = False,
+    save_key: str = "",
     ocr_safe_parts_by_item: dict[str, list[str]] | None = None,
     evidence_context: dict[str, Any] | None = None,
     ocr_retry_evidence_ids: list[str] | None = None,
@@ -6382,7 +6396,7 @@ def _clarify_activity_confirmation_group_locked(
                 "question_groups": [],
                 "generated_at": generated_at,
             }
-            clarification = {"status": "completed", **result}
+            clarification = {"status": "completed", "save_key": save_key, **result}
             retry_placeholders = ",".join("?" for _ in unresolved_item_keys)
             conn.execute(
                 "UPDATE activity_confirmation_items SET clarification=?,"
@@ -6496,7 +6510,7 @@ def _clarify_activity_confirmation_group_locked(
                 "question_groups": [],
                 "generated_at": generated_at,
             }
-            clarification = {"status": "completed", **result}
+            clarification = {"status": "completed", "save_key": save_key, **result}
             for row in unresolved_rows:
                 if str(row["item_key"]) not in filtered_item_keys:
                     continue
@@ -6860,6 +6874,7 @@ def _clarify_activity_confirmation_group_locked(
         }
         clarification = {
             "status": "completed",
+            "save_key": save_key,
             "generated_at": generated_at,
             **result,
         }
@@ -6913,6 +6928,49 @@ def _clarify_activity_confirmation_group_locked(
         raise
 
 
+def saved_form_receipt(conn, payload):
+    """Read exact existing form results; never answer, clarify, or expose text."""
+    allowed = {"group_key", "member_revision", "item_key", "answer", "reason", "note", "workstream", "outcome", "purpose", "save_request"}
+    if not isinstance(payload, dict) or set(payload) - allowed:
+        raise ValueError("invalid_receipt_request")
+    with document_authorization_lock(conn, exclusive=False):
+        if payload.get("purpose") == "clarification":
+            request = payload.get("save_request")
+            if not isinstance(request, str) or len(request) != 36 or str(uuid.UUID(request)) != request:
+                raise ValueError("invalid_save_request")
+            key = _clarification_save_key(payload.get("group_key", ""), payload.get("member_revision", ""), payload.get("note", ""), payload.get("save_request", ""))
+            # This transaction marker survives the intended regroup/filter without
+            # retaining or returning the supplied note. The public card omits it.
+            row = conn.execute("SELECT 1 FROM activity_confirmation_items WHERE json_valid(clarification) AND json_extract(clarification,'$.save_key')=? LIMIT 1", (key,)).fetchone()
+            return {"interface":"activity-form-receipt", "status":"confirmed" if row else "not_confirmed", "checked_at":_utc_now(), **_safe_action_flags()}
+        if payload.get("group_key"):
+            rows = [dict(row) for row in conn.execute("SELECT * FROM activity_confirmation_items WHERE group_key=? ORDER BY item_key", (payload["group_key"],))]
+            bound = bool(rows and _member_revision(rows) == payload.get("member_revision"))
+        else:
+            rows = [dict(row) for row in conn.execute("SELECT * FROM activity_confirmation_items WHERE item_key=?", (payload.get("item_key", ""),))]
+            bound = len(rows) == 1
+        matched = bool(bound and len(_live_confirmation_rows(conn, rows)) == len(rows))
+        if payload.get("purpose") == "clarification":
+            note = safe_decision_text(payload.get("note", ""), max_len=360)
+            matched = matched and all(row.get("clarification_note", "") == note for row in rows)
+        elif payload.get("purpose") == "answer":
+            expected_answer = payload.get("answer")
+            expected_reason = "user_ignored" if expected_answer == "ignored" else payload.get("reason") or "other"
+            workstream, outcome = _answer_details(expected_answer, payload.get("workstream", ""), payload.get("outcome", ""))
+            matched = matched and all(row.get("answer") == expected_answer and row.get("answer_reason") == expected_reason
+                and row.get("user_workstream", "") == workstream
+                and _normalized_outcome(row.get("user_outcome") or "unknown") == _normalized_outcome(outcome) for row in rows)
+            if expected_answer == "defer" and payload.get("note"):
+                matched = matched and all(row.get("clarification_note", "") == safe_decision_text(payload["note"], max_len=240) for row in rows)
+        else:
+            matched = False
+        return {"interface":"activity-form-receipt", "status":"confirmed" if matched else "not_confirmed", **_safe_action_flags()}
+
+
+class ManualActivityInputError(ValueError):
+    """Validation failed before the manual write transaction began."""
+
+
 def manual_add_confirmed_activity(
     conn: sqlite3.Connection,
     *,
@@ -6923,6 +6981,7 @@ def manual_add_confirmed_activity(
     started_at: str,
     ended_at: str | None = None,
     _authorization_lock_held: bool = False,
+    receipt_only: bool = False,
 ) -> dict[str, Any]:
     if str(confirmation_action or "") != MANUAL_CONFIRMATION_ACTION:
         return {
@@ -6930,40 +6989,52 @@ def manual_add_confirmed_activity(
             "error": "explicit_manual_confirmation_required",
             **_safe_action_flags(),
         }
-    label = _safe_manual_text(safe_label, field="safe_label", max_len=180, required=True)
-    safe_workstream = _safe_manual_text(
-        workstream,
-        field="workstream",
-        max_len=120,
-        required=True,
-    )
-    if str(outcome or "unknown") not in OUTCOME_VALUES:
-        raise ValueError("unsupported manual outcome")
-    safe_outcome = _normalized_outcome(outcome)
-    manual_event_type = "preparation" if safe_outcome == "preparation_only" else "manual"
-    # This is the one intentional occurred + preparation_only representation:
-    # the fact being confirmed is the preparation activity itself, not the
-    # original interview/meeting/application candidate.  Keep it on the same
-    # validator path as every other answer so it cannot become an implicit SQL
-    # exception.
-    _validate_preparation_answer(
-        "occurred",
-        "correct",
-        safe_outcome,
-        candidate_origin="manual",
-        event_type=manual_event_type,
-    )
-    start_dt = _manual_datetime(started_at, field="started_at")
-    end_dt = _manual_datetime(ended_at or started_at, field="ended_at")
-    if end_dt < start_dt or end_dt - start_dt > timedelta(days=1):
-        raise ValueError("invalid manual activity time range")
-    start_text = start_dt.isoformat(timespec="seconds")
-    end_text = end_dt.isoformat(timespec="seconds")
-    fingerprint = _hash(
-        "|".join(("manual", start_text, end_text, label, safe_workstream, safe_outcome))
-    )
-    item_key = "manual_" + fingerprint[:24]
-    group_key = "grp_" + _hash(f"manual_group|{item_key}")[:24]
+    try:
+        label = _safe_manual_text(safe_label, field="safe_label", max_len=180, required=True)
+        safe_workstream = _safe_manual_text(
+            workstream,
+            field="workstream",
+            max_len=120,
+            required=True,
+        )
+        if str(outcome or "unknown") not in OUTCOME_VALUES:
+            raise ValueError("unsupported manual outcome")
+        safe_outcome = _normalized_outcome(outcome)
+        manual_event_type = "preparation" if safe_outcome == "preparation_only" else "manual"
+        # This is the one intentional occurred + preparation_only representation:
+        # the fact being confirmed is the preparation activity itself, not the
+        # original interview/meeting/application candidate.  Keep it on the same
+        # validator path as every other answer so it cannot become an implicit SQL
+        # exception.
+        _validate_preparation_answer(
+            "occurred",
+            "correct",
+            safe_outcome,
+            candidate_origin="manual",
+            event_type=manual_event_type,
+        )
+        start_dt = _manual_datetime(started_at, field="started_at")
+        end_dt = _manual_datetime(ended_at or started_at, field="ended_at")
+        if end_dt < start_dt or end_dt - start_dt > timedelta(days=1):
+            raise ValueError("invalid manual activity time range")
+        start_text = start_dt.isoformat(timespec="seconds")
+        end_text = end_dt.isoformat(timespec="seconds")
+        fingerprint = _hash(
+            "|".join(("manual", start_text, end_text, label, safe_workstream, safe_outcome))
+        )
+        item_key = "manual_" + fingerprint[:24]
+        group_key = "grp_" + _hash(f"manual_group|{item_key}")[:24]
+    except ValueError as exc:
+        raise ManualActivityInputError(str(exc)) from exc
+    if receipt_only:
+        with document_authorization_lock(conn, exclusive=False):
+            row = conn.execute("SELECT * FROM activity_confirmation_items WHERE item_key=?", (item_key,)).fetchone()
+            value = dict(row) if row else {}
+            matched = bool(row and value.get("candidate_origin") == "manual" and value.get("state") == "confirmed"
+                           and value.get("answer") == "occurred" and value.get("answer_reason") == "correct"
+                           and value.get("user_workstream") == safe_workstream and value.get("user_outcome") == safe_outcome
+                           and _confirmation_source_is_live(conn, value))
+            return {"interface":"manual-activity-receipt", "status":"confirmed" if matched else "not_confirmed", "raw_access":False}
     subject = {
         "event_label": "手工确认活动",
         "company": "",
@@ -9020,6 +9091,10 @@ def _is_personal_ai_monitor_app(value: str) -> bool:
         "apppersonalaimonitor",
         "comexampleuserpersonalaimonitor",
         "comexampleuserpersonalaimonitormenubar",
+        "agi",
+        "appagi",
+        "psi",
+        "apppsi",
     }
 
 

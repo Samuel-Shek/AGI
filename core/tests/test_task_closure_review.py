@@ -4,6 +4,7 @@ All state is synthetic and private to TemporaryDirectory. Native transport and
 notifications are mocked; these checks do not certify a deployed client or UI.
 """
 from __future__ import annotations
+from tests.closure_legacy_fixture import legacy_begin
 
 import json
 import importlib.util
@@ -40,7 +41,7 @@ class IndependentClosureReviewTests(unittest.TestCase):
         self.temp.cleanup()
 
     def begin(self, turn):
-        return self.store.begin({
+        return legacy_begin(self.store, {
             "platform": "codex", "session": "independent-review-fixture",
             "turn": turn, "objective": "Close the isolated work package",
             "scope_root": str(self.root), "complex": True,
@@ -570,12 +571,13 @@ class IndependentClosureReviewTests(unittest.TestCase):
         hook.run({"session_id": session, "tool_name": "functions.apply_patch"}, "codex", "tool")
         original = self.store.conn.execute("SELECT task_id,turn FROM closure_hook_roots WHERE session=?", (session,)).fetchone()
         self.assertIsNone(self.store.conn.execute("SELECT id FROM closure_tasks WHERE id=?", (original["task_id"],)).fetchone())
-        correction = hook.run({"session_id": session}, "codex", "stop")
+        self.assertEqual(hook.run({"session_id": session}, "codex", "stop"), {"gap": "native_stop_turn_missing"})
+        correction = hook.run({"session_id": session, "turn_id": "human-original"}, "codex", "stop")
         self.assertTrue(correction["block"])
         hook.run({"session_id": session, "turn_id": "automatic-correction", "prompt": correction["reason"]}, "codex", "prompt")
         after = self.store.conn.execute("SELECT task_id,turn FROM closure_hook_roots WHERE session=?", (session,)).fetchone()
         self.assertEqual(tuple(after), tuple(original))
-        second = hook.run({"session_id": session}, "codex", "stop")
+        second = hook.run({"session_id": session, "turn_id": "automatic-correction"}, "codex", "stop")
         self.assertFalse(second.get("block", False))
         self.assertTrue(second.get("gap"))
 
@@ -585,7 +587,8 @@ class IndependentClosureReviewTests(unittest.TestCase):
         before = self.store.conn.execute("SELECT count(*) FROM closure_tasks").fetchone()[0]
         hook.run({"session_id": session, "turn_id": "simple-human-turn", "prompt": "Read current fixture state"}, "codex", "prompt")
         hook.run({"session_id": session, "tool_name": "functions.exec_command"}, "codex", "tool")
-        self.assertEqual(hook.run({"session_id": session}, "codex", "stop"), {})
+        self.assertEqual(hook.run({"session_id": session}, "codex", "stop"), {"gap": "native_stop_turn_missing"})
+        self.assertEqual(hook.run({"session_id": session, "turn_id": "simple-human-turn"}, "codex", "stop"), {})
         self.assertEqual(self.store.conn.execute("SELECT count(*) FROM closure_tasks").fetchone()[0], before)
 
     def test_hook_registered_canceled_child_cannot_continue_tools(self):

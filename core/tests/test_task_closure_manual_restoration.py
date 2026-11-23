@@ -1,3 +1,4 @@
+from tests.closure_legacy_fixture import legacy_begin
 import hashlib
 import json
 import os
@@ -25,7 +26,7 @@ class ManualRestorationTests(unittest.TestCase):
         self.bridge.write_text(json.dumps({"retirement_active": True, "retirement": {
             "at": "batch-1", "status": "owner_retired", "policy_version": closure.personal_scope.VERSION}}))
         self.store = closure.Store(self.parent / "activity.sqlite")
-        self.task_id = self.store.begin({"platform": "codex", "session": "fixture-owner",
+        self.task_id = legacy_begin(self.store, {"platform": "codex", "session": "fixture-owner",
             "turn": "original", "objective": "manual project acceptance",
             "scope_root": str(self.root), "complex": True, "closure_mode": "full"})["task_id"]
         self.task = dict(self.store.conn.execute("SELECT * FROM closure_tasks WHERE id=?", (self.task_id,)).fetchone())
@@ -108,7 +109,7 @@ class ManualRestorationTests(unittest.TestCase):
         text = (self.root / "final.md").read_text()
         self.assertTrue(self.store.check_final_response(self.task_id, text)["valid"])
         self.assertIn("native_final_text_mismatch", self.store.check_final_response(self.task_id, text + "\n")["reasons"])
-        new_task = self.store.begin({"platform": "codex", "session": "fixture-owner", "turn": "other-task",
+        new_task = legacy_begin(self.store, {"platform": "codex", "session": "fixture-owner", "turn": "other-task",
             "objective": "different task", "scope_root": str(self.root), "complex": True})["task_id"]
         other = dict(self.store.conn.execute("SELECT * FROM closure_tasks WHERE id=?", (new_task,)).fetchone())
         self.assertFalse(closure.manual_closure_allowed(other))
@@ -368,7 +369,7 @@ class ProjectManualRestorationTests(unittest.TestCase):
         return item
 
     def test_new_manual_task_and_session_work_without_reissuing_project_permission(self):
-        self.task_id = self.store.begin({"platform": "codex", "session": "another-owner-chat",
+        self.task_id = legacy_begin(self.store, {"platform": "codex", "session": "another-owner-chat",
             "turn": "new-request", "objective": "new owner requested project edit",
             "scope_root": str(self.root), "complex": True, "closure_mode": "full"})["task_id"]
         self.accept_issue()

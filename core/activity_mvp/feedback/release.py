@@ -12,6 +12,7 @@ import time
 import ctypes
 import stat
 import fcntl
+import ast
 if __package__ in (None,''):
     import sys
     sys.path.insert(0,str(Path(__file__).resolve().parents[2]))
@@ -79,13 +80,15 @@ def _unchanged_startup_shape(current,initializer,meta_key,meta_value):
     return hashlib.sha256(json.dumps([sorted(map(tuple,sql)),before],sort_keys=True).encode()).hexdigest()
 
 def database_structure_policy(live,feedback_path):
-    from ..storage import init_schema,SCHEMA_VERSION
+    from ..storage import init_schema,document_schema_activation_present
     from .store import SCHEMA
     try:
         with sqlite3.connect((live/'data/activity.sqlite').as_uri()+'?mode=ro',uri=True) as current:
             current.execute('PRAGMA query_only=ON')
             version=current.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
-            if version is None or str(version[0])!=str(SCHEMA_VERSION):raise ValueError('activity_schema_version')
+            if version is None or str(version[0]) not in {'32','33'}:raise ValueError('activity_schema_version')
+            activity_version=int(version[0])
+            if activity_version==32 and document_schema_activation_present(current):raise ValueError('activity_schema_activation_inconsistent')
             activity_shape=_unchanged_startup_shape(current,init_schema,'schema_version',version[0])
         with sqlite3.connect(feedback_path.as_uri()+'?mode=ro',uri=True) as current:
             current.execute('PRAGMA query_only=ON')
@@ -95,26 +98,145 @@ def database_structure_policy(live,feedback_path):
     except (sqlite3.Error,ValueError,TypeError) as exc:
         return {'databases_required':True,'reason':'structure_unverified','detail':str(exc)}
     return {'databases_required':False,'reason':'existing_versions_and_startup_structure_verified',
-            'schema':SCHEMA_VERSION,'activity_structure_sha256':activity_shape,'feedback_structure_sha256':feedback_shape}
+            'schema':activity_version,'activity_structure_sha256':activity_shape,'feedback_structure_sha256':feedback_shape}
 
-def database_snapshot_policy(live,candidate,feedback_path):
-    """Skip databases only for the already-governed pure text repair surface."""
-    from .repair import EDITABLE
-    allowed={str(Path(p).relative_to('core')) for p in EDITABLE}
-    before={str(p.relative_to(live)):hashlib.sha256(p.read_bytes()).hexdigest()
-            for p in (live/'activity_mvp').rglob('*.py')}
-    after={str(p.relative_to(candidate/'core')):hashlib.sha256(p.read_bytes()).hexdigest()
-           for p in (candidate/'core/activity_mvp').rglob('*.py')}
-    changed={p for p in before.keys()|after.keys() if before.get(p)!=after.get(p)}
-    if not changed<=allowed:
-        return {'databases_required':True,'reason':'initialization_or_other_dependency_changed'}
-    from .policy import validate_pure_change
-    for rel in changed:validate_pure_change('core/'+rel,(candidate/'core'/rel).read_text())
-    result=database_structure_policy(live,feedback_path)
-    if not result['databases_required']:result['reason']='pure_text_code_only_schema_and_initializers_unchanged'
+def application_content_hash(app):
+    """Bind the complete paired product, including Swift and resources."""
+    app=Path(app);rows=[]
+    if app.is_symlink() or not app.is_dir():raise ValueError('backup_review_application_unavailable')
+    for path in sorted(app.rglob('*')):
+        rel=path.relative_to(app).as_posix()
+        if path.is_symlink():
+            if not path.resolve().is_relative_to(app.resolve()):raise ValueError('backup_review_application_alias')
+            rows.append([rel,'link',os.readlink(path)])
+        elif path.is_file():rows.append([rel,'file',hashlib.sha256(path.read_bytes()).hexdigest()])
+        elif not path.is_dir():raise ValueError('backup_review_application_member')
+    return digest(rows)
+
+
+def _runtime_contents(root):
+    paths=[root/p for p in FILES]
+    for folder in FOLDERS:
+        paths.extend(p for p in (root/folder).rglob('*') if p.is_file() and p.suffix!='.pyc' and p.name!='.DS_Store')
+    result={}
+    for p in paths:
+        if p.is_symlink() or not p.is_file():raise ValueError('backup_review_runtime_unavailable')
+        result[p.relative_to(root).as_posix()]=p.read_bytes()
     return result
 
-def prepare_recovery(live,candidate,recovery,feedback_path,copy=None,guard=None):
+
+def operator_database_effect_binding(live,candidate,verification):
+    """Evidence binding inside the existing qualified operator publication.
+
+    This is not publication authority. Automatic candidates cannot supply an
+    operator qualification or extend their fixed editable surface through it.
+    """
+    if verification.get('operator_release') is not True or verification.get('signature') is not True:
+        raise ValueError('backup_review_not_qualified_operator_release')
+    gates=('core','evolution','swift','interaction','privacy','publication','comparison','build')
+    if any(verification.get('tests',{}).get(n,{}).get('passed') is not True for n in gates):
+        raise ValueError('backup_review_qualification_incomplete')
+    candidate=Path(candidate);live=Path(live)
+    if core_hash(candidate/'core')!=verification.get('core_hash'):raise ValueError('backup_review_candidate_changed')
+    revision=verification.get('revision')
+    if run(['git','rev-parse','HEAD'],candidate).stdout.strip()!=revision:raise ValueError('backup_review_revision_changed')
+    source=verification.get('source_manifest')
+    if not isinstance(source,dict) or not source:raise ValueError('backup_review_source_manifest_missing')
+    for rel,sha in source.items():
+        p=candidate/rel
+        if (not isinstance(rel,str) or Path(rel).is_absolute() or Path(rel).as_posix()!=rel
+            or '..' in Path(rel).parts or p.is_symlink() or not p.is_file()
+            or hashlib.sha256(p.read_bytes()).hexdigest()!=sha):raise ValueError('backup_review_source_changed')
+    before=_runtime_contents(live);after=_runtime_contents(candidate/'core')
+    changed=sorted(p for p in before.keys()|after.keys() if before.get(p)!=after.get(p))
+    # New/deleted modules, dependencies, launchers and initialization carriers
+    # remain on the dedicated database-recovery path even after code review.
+    initializers={'activity_mvp/storage.py','activity_mvp/feedback/store.py','activity_mvp/reflection/store.py'}
+    if any(p in initializers or p not in before or p not in after
+           or not p.startswith('activity_mvp/') or not p.endswith('.py')
+           or Path(p).name in {'__init__.py','__main__.py'} for p in changed):
+        raise ValueError('backup_review_initialization_or_dependency_changed')
+    for rel in changed:
+        imports=lambda raw:[ast.dump(n,include_attributes=False) for n in ast.walk(ast.parse(raw)) if isinstance(n,(ast.Import,ast.ImportFrom))]
+        if imports(before[rel])!=imports(after[rel]):raise ValueError('backup_review_import_dependency_changed')
+    product=candidate/'build/PSI.app'
+    info=plistlib.loads((product/'Contents/Info.plist').read_bytes())
+    if (info.get('PAMCoreCodeHash')!=verification['core_hash'] or info.get('PAMGitDirty')
+        or not revision.startswith(info.get('PAMGitRevision','missing'))):raise ValueError('backup_review_application_provenance_changed')
+    qualification={k:v for k,v in verification.items() if k!='database_effect_review'}
+    return {'live_core_hash':core_hash(live),'candidate_core_hash':verification['core_hash'],
+            'candidate_revision':revision,'candidate_application_sha256':application_content_hash(product),
+            'qualified_source_manifest_sha256':digest(source),'qualification_sha256':digest(qualification),
+            'runtime_changed_files':changed}
+
+
+def _operator_database_review(live,candidate,verification):
+    """Consume the same independently reviewed operator qualification, fail closed."""
+    try:
+        reference=verification.get('database_effect_review',{})
+        path=Path(reference['path']);expected=reference['sha256']
+        if not path.is_absolute() or any(p.is_symlink() for p in (path,*path.parents)):
+            raise ValueError('backup_review_evidence_alias')
+        fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+        with os.fdopen(fd,'rb') as f:
+            before=os.fstat(f.fileno())
+            if (not stat.S_ISREG(before.st_mode) or before.st_nlink!=1 or before.st_uid!=os.getuid()
+                or stat.S_IMODE(before.st_mode)&0o077):raise ValueError('backup_review_evidence_type_or_owner')
+            raw=f.read(2*1024*1024+1);after=os.fstat(f.fileno())
+        token=lambda s:(s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_ctime_ns)
+        if (not stat.S_ISREG(before.st_mode) or before.st_nlink!=1 or before.st_uid!=os.getuid()
+            or stat.S_IMODE(before.st_mode)&0o077 or len(raw)>2*1024*1024
+            or token(before)!=token(after) or token(after)!=token(path.lstat())
+            or hashlib.sha256(raw).hexdigest()!=expected):raise ValueError('backup_review_evidence_changed')
+        def pairs(items):
+            result={}
+            for key,value in items:
+                if key in result:raise ValueError('backup_review_duplicate_key')
+                result[key]=value
+            return result
+        review=json.loads(raw,object_pairs_hook=pairs,parse_constant=lambda x:(_ for _ in ()).throw(ValueError('backup_review_nonfinite')))
+        if (review.get('schema')!='independent-operator-database-effects-v1'
+            or review.get('database_effects')!='unchanged' or review.get('initialization_effects')!='unchanged'
+            or not isinstance(review.get('evidence'),list) or not review['evidence']):
+            raise ValueError('backup_review_no_positive_evidence')
+        binding=operator_database_effect_binding(live,candidate,verification)
+        if review.get('binding')!=binding:raise ValueError('backup_review_binding_changed')
+        return {'review_path':str(path),'review_sha256':expected,'binding':binding},None
+    except (OSError,ValueError,TypeError,KeyError,AttributeError,SyntaxError,RecursionError,subprocess.SubprocessError) as exc:
+        # An invalid omission receipt never permits omitting recovery, and does
+        # not prevent an otherwise authorized release from keeping its backup.
+        label=str(exc) if isinstance(exc,ValueError) and str(exc).startswith('backup_review_') else type(exc).__name__
+        return None,label
+
+
+def database_snapshot_policy(live,candidate,feedback_path,*,verification=None):
+    """Separate recovery risk evidence from automatic model edit authority."""
+    from .repair import EDITABLE
+    allowed={str(Path(p).relative_to('core')) for p in EDITABLE}
+    try:
+        runtime_before=_runtime_contents(live);runtime_after=_runtime_contents(candidate/'core')
+        changed={p for p in runtime_before.keys()|runtime_after.keys()
+                 if runtime_before.get(p)!=runtime_after.get(p)}
+        dependencies={p for p in changed if not p.startswith('activity_mvp/')}
+    except (OSError,ValueError):
+        return {'databases_required':True,'reason':'runtime_dependencies_unverified'}
+    if dependencies:return {'databases_required':True,'reason':'runtime_dependency_changed','changed':sorted(dependencies)}
+    review=None
+    operator=isinstance(verification,dict) and verification.get('operator_release') is True
+    if operator or not changed<=allowed:
+        error='backup_review_missing'
+        if verification is not None:review,error=_operator_database_review(live,candidate,verification)
+        if review is None:return {'databases_required':True,'reason':'data_effects_unverified','detail':error}
+    else:
+        from .policy import validate_pure_change
+        for rel in changed:validate_pure_change('core/'+rel,(candidate/'core'/rel).read_text())
+    result=database_structure_policy(live,feedback_path)
+    if not result['databases_required']:
+        result['reason']='operator_reviewed_code_only_schema_and_data_effects_unchanged' if review else 'pure_text_code_only_schema_and_initializers_unchanged'
+        if review:result['operator_database_review']=review
+    return result
+
+def prepare_recovery(live,candidate,recovery,feedback_path,copy=None,guard=None,*,verification=None):
     """Retain changed old files once, directly in the selected external payload."""
     copy=copy or shutil.copy2
     paths=[live/p for p in FILES]
@@ -126,7 +248,7 @@ def prepare_recovery(live,candidate,recovery,feedback_path,copy=None,guard=None)
             if guard:guard()
             target=recovery/rel;target.parent.mkdir(parents=True,exist_ok=True);copy(old,target)
             retained[str(rel)]=hashlib.sha256(target.read_bytes()).hexdigest()
-    policy=database_snapshot_policy(live,candidate,feedback_path)
+    policy=database_snapshot_policy(live,candidate,feedback_path,verification=verification)
     if policy['databases_required']:
         if guard:guard()
         needed=sum(p.stat().st_size for p in [live/'data/activity.sqlite',feedback_path] if p.exists())+64*1024*1024
@@ -159,7 +281,7 @@ def _require_publication_active(store):
 def publish_candidate(store,candidate,base,verification,job,*,require_ui_absent=False):
     _require_publication_active(store)
     conf=store.get('config');repo=Path(conf['repository']);live=Path(conf['live_core']);app=Path(conf['application'])
-    if live!=Path.home()/'Library/Application Support/Personal AI Monitor/core' or app!=Path('/Applications/AGI.app'):raise PermissionError('release_target_not_registered')
+    if live!=Path.home()/'Library/Application Support/PSI/core' or app!=Path('/Applications/PSI.app'):raise PermissionError('release_target_not_registered')
     if run(['git','rev-parse','HEAD'],repo).stdout.strip()!=base or run(['git','status','--porcelain','--untracked-files=no'],repo).stdout.strip():raise ValueError('source_baseline_changed')
     old=plistlib.loads((app/'Contents/Info.plist').read_bytes())
     if not base.startswith(old['PAMGitRevision']) or core_hash(live)!=old['PAMCoreCodeHash']:raise ValueError('installed_baseline_changed')
@@ -167,7 +289,7 @@ def publish_candidate(store,candidate,base,verification,job,*,require_ui_absent=
     from .recovery_storage import prepare_external,check_external
     before={'revision':old['PAMGitRevision'],'core_hash':old['PAMCoreCodeHash'],'job':job}
     recovery,local_receipt=prepare_external(store.root,job,app,before,
-        lambda payload,copy,guard:prepare_recovery(live,candidate,payload,store.path,copy,guard))
+        lambda payload,copy,guard:prepare_recovery(live,candidate,payload,store.path,copy,guard,verification=verification))
     check_external(recovery,local_receipt)
     _require_publication_active(store)
     ui_yielded=False
@@ -184,7 +306,9 @@ def publish_candidate(store,candidate,base,verification,job,*,require_ui_absent=
             ui_yielded=app_busy('agi')
             ready=prepare_idle_exit(store,'agi')
             _require_publication_active(store)
-            if not ready:return {'installed':False,'status':'app_busy'}
+            if not ready:
+                from .idle_exit import unavailable
+                return {'installed':False,'status':'app_busy','ui_exit':getattr(store,'_idle_exit_report',unavailable())}
         atomic(request_path,packed(request))
         request_written=True
         # Serialize only actual dispatch with the owner's pause/stop commands.
@@ -307,7 +431,7 @@ def _entry_scope(entry,live,app):
         if not target.is_relative_to(live) or '..' in target.parts:raise PermissionError('journal_target_scope')
         rel=target.relative_to(live)
         if rel.parts[0] not in FOLDERS and str(rel) not in FILES:raise PermissionError('journal_target_scope')
-    allowed=(temp.parent==app.parent and temp.name.startswith('.AGI-feedback-') and temp.name.endswith('.app')) if target==app else (temp.parent.parent==live.parent and temp.parent.name.startswith('.AGI-publication-') and temp.name.isdigit())
+    allowed=(temp.parent==app.parent and temp.name.startswith('.PSI-feedback-') and temp.name.endswith('.app')) if target==app else (temp.parent.parent==live.parent and temp.parent.name.startswith('.PSI-publication-') and temp.name.isdigit())
     if not allowed:raise PermissionError('journal_stage_scope')
     if any(p.is_symlink() for p in [target,*target.parents,temp,*temp.parents]):raise PermissionError('journal_object_alias')
     return target,temp
@@ -365,7 +489,7 @@ def finalize_exchange(journal,guard=None,original_guard=None):
             if original_guard:original_guard.cleanup(entry,guard)
             elif temp.is_dir():shutil.rmtree(temp)
             else:temp.unlink()
-    for folder in {Path(e['stage']).parent for e in record['entries'] if Path(e['stage']).parent.name.startswith('.AGI-publication-')}:
+    for folder in {Path(e['stage']).parent for e in record['entries'] if Path(e['stage']).parent.name.startswith('.PSI-publication-')}:
         if folder.exists():
             folder.rmdir();fd=os.open(folder.parent,os.O_RDONLY|os.O_NOFOLLOW)
             try:os.fsync(fd)
@@ -378,7 +502,7 @@ def exchange_pair(candidate, live, app, recovery, changed, expected_hash, valida
     Stages contain the candidate until a swap. After a swap they are the actual
     originals, not a locally generated backup. The journal is metadata only.
     """
-    stage=app.with_name('.AGI-feedback-'+str(os.getpid())+'.app')
+    stage=app.with_name('.PSI-feedback-'+str(os.getpid())+'.app')
     journal=Path(journal) if journal else recovery/'exchange.json'
     resumed=recover_exchange(journal,live,app,commit_info)
     if resumed:
@@ -390,12 +514,12 @@ def exchange_pair(candidate, live, app, recovery, changed, expected_hash, valida
         return {'paired':True,'core_hash':core_hash(live),'transaction_journal':str(journal),'original_cleanup_complete':done,'resumed':True}
     previous_hash=core_hash(live)
     if guard:guard()
-    if candidate_guard:candidate_guard(candidate/'build/AGI.app',True)
+    if candidate_guard:candidate_guard(candidate/'build/PSI.app',True)
     if stage.exists() or stage.is_symlink():raise ValueError('release_exchange_already_started')
-    run(['/usr/bin/ditto',candidate/'build/AGI.app',stage])
+    run(['/usr/bin/ditto',candidate/'build/PSI.app',stage])
     if candidate_guard:
-        candidate_guard(candidate/'build/AGI.app',True);candidate_guard(stage,False)
-    code_stage=live.parent/('.AGI-publication-'+str(os.getpid()))
+        candidate_guard(candidate/'build/PSI.app',True);candidate_guard(stage,False)
+    code_stage=live.parent/('.PSI-publication-'+str(os.getpid()))
     if code_stage.exists() or code_stage.is_symlink():raise ValueError('release_code_stage_conflict')
     private_directory(code_stage)
     exchanges=[];stages=[stage];entries=[]
@@ -485,7 +609,7 @@ def _postboot_rollback_context(request,r,prepared,journal):
     from .task_maintenance import read_file,_pairs
     from .store import Store
     b=backend();request=Path(request);journal=Path(journal)
-    candidate=Path(r['candidate']);app_candidate=candidate/'build/AGI.app'
+    candidate=Path(r['candidate']);app_candidate=candidate/'build/PSI.app'
     old_app=r['verification']['application_identity'];current_app=b.tree_identity(app_candidate)
     old_devices={row[0] for row in old_app.values()}
     original_devices={row[0] for bound in prepared['source_bindings'].values() for row in bound['identity'].values()}
@@ -697,8 +821,8 @@ def _rollback_original_guard(request, r, prepared, journal, postboot=None):
         or core_hash(live)!=prepared['before']['core_hash']):
         raise ValueError('rollback_baseline_changed')
     if (core_hash(candidate/'core')!=r['verification']['core_hash']
-        or b.tree_identity(candidate/'build/AGI.app')!=(postboot['candidate_identity'] if postboot else r['verification']['application_identity'])
-        or b.fingerprint(b.manifest(candidate/'build/AGI.app'))!=r['verification']['application_manifest_sha256']):
+        or b.tree_identity(candidate/'build/PSI.app')!=(postboot['candidate_identity'] if postboot else r['verification']['application_identity'])
+        or b.fingerprint(b.manifest(candidate/'build/PSI.app'))!=r['verification']['application_manifest_sha256']):
         raise ValueError('rollback_candidate_changed')
     completed_at=record.get('rollback_completed_at')
     if completed_at is None:
@@ -820,7 +944,7 @@ def standalone_publish(request):
         check_external(recovery,local_receipt)
         with Store(live/'data/feedback',readonly=True) as current:
             _require_publication_active(current)
-    service=f'gui/{os.getuid()}/app.personalai.monitor.core';plist=Path.home()/'Library/LaunchAgents/app.personalai.monitor.core.plist'
+    service=f'gui/{os.getuid()}/app.psi.core';plist=Path.home()/'Library/LaunchAgents/app.psi.core.plist'
     loaded=subprocess.run(['/bin/launchctl','print',service],capture_output=True).returncode==0
     was_loaded=r.get('service_was_loaded',loaded)
     if 'service_was_loaded' not in r:
@@ -857,7 +981,7 @@ def standalone_publish(request):
     release_guard()
     if loaded:run(['/bin/launchctl','bootout',service])
     if not r.get('require_ui_absent',False):
-        subprocess.run(['/usr/bin/pkill','-x','PersonalAIMonitor'],capture_output=True)
+        subprocess.run(['/usr/bin/pkill','-x','PSI'],capture_output=True)
     time.sleep(1)
     def validate_live():
         run(['/usr/bin/codesign','--verify','--deep','--strict',app])
@@ -869,8 +993,14 @@ def standalone_publish(request):
         repo=Path(conf['repository']);head=run(['git','rev-parse','HEAD'],repo).stdout.strip()
         if head==r['base']:run(['git','fetch',str(candidate),r['verification']['revision']],repo)
         elif not resumed or head!=r['verification']['revision']:raise ValueError('source_changed_during_publish')
-    def commit_source():
+    def exchange_guard():
         release_guard()
+        if r.get('require_ui_absent', False):
+            from .project_repair import app_busy
+            if app_busy('agi'):
+                raise PermissionError('application_reopened_before_exchange')
+    def commit_source():
+        exchange_guard()
         repo=Path(conf['repository'])
         if not resumed and run(['git','rev-parse','HEAD'],repo).stdout.strip()!=r['base']:raise ValueError('source_changed_during_publish')
         run(['git','merge','--ff-only',r['verification']['revision']],repo)
@@ -885,7 +1015,7 @@ def standalone_publish(request):
         files=[Path(file).relative_to('core') for file in changed if file.startswith('core/activity_mvp/')]
         original_guard=_rollback_original_guard(request,r,prepared,journal,postboot) if postboot else _rollback_original_guard(request,r,prepared,journal)
         pair=exchange_pair(candidate,live,app,recovery,files,r['verification']['core_hash'],validate_live,
-                      release_guard,journal,commit_source,commit_info,cleanup=False,original_guard=original_guard,candidate_guard=candidate_guard)
+                      exchange_guard,journal,commit_source,commit_info,cleanup=False,original_guard=original_guard,candidate_guard=candidate_guard)
         receipt={'installed':True,'revision':r['verification']['revision'],'core_hash':core_hash(live),'verified_at':time.time(),'recovery':str(recovery),'executor':executor,**pair}
         _journal_write(local_receipt.with_suffix('.installed.json'),{**receipt,'runtime_restored':False,'phase':'paired_committed_runtime_pending'})
     finally:

@@ -8711,6 +8711,7 @@ def owner_context_action(
     raw_payload: bytes | str,
     *,
     now: datetime | None = None,
+    receipt_only: bool = False,
 ) -> dict[str, Any]:
     current = _aware_utc(now)
     try:
@@ -8831,6 +8832,27 @@ def owner_context_action(
 
     if not context_console_enabled(conn):
         return _owner_action_result(status="disabled", reason_code="feature_flag_off")
+
+    if receipt_only:
+        # Same normalization and authorization as the write, without a transaction,
+        # migration, replay, receipt update, or returned input text.
+        try:
+            with _context_authorization_lock(conn, exclusive=False):
+                existing = conn.execute(
+                    "SELECT * FROM context_activity_confirmation_links WHERE idempotency_key=?",
+                    (idempotency_key,),
+                ).fetchone()
+                matched = bool(existing and hmac.compare_digest(str(existing["payload_hash"] or ""), action_payload_hash))
+                if matched:
+                    graph = _load_verified_graph(conn, str(existing["verified_ref"] or ""))
+                    if str(existing["status"]) != "verified" or not graph:
+                        matched = False
+                    else:
+                        _validate_verified_graph(conn, graph, current)
+                return {"interface": "owner-action-receipt", "status": "confirmed" if matched else "not_confirmed",
+                        "payload_hash": action_payload_hash, "checked_at": _iso(current), "raw_access": False}
+        except (ContractError, sqlite3.Error):
+            return {"interface": "owner-action-receipt", "status": "unknown", "raw_access": False}
 
     try:
         with _context_authorization_lock(conn, exclusive=False):
@@ -9129,8 +9151,28 @@ def record_product_feedback(
             if source_kind == "local_handoff":
                 if not is_local_handoff or str(manifest["target_ref"] or ""):
                     raise ContractError("feedback_source_kind_mismatch")
-            elif is_local_handoff or not str(manifest["target_ref"] or ""):
+            elif is_local_handoff:
                 raise ContractError("feedback_source_kind_mismatch")
+            elif not str(manifest["target_ref"] or ""):
+                # Current shared manifests are independent of their delivery
+                # target. An empty target is valid only with an exact live,
+                # authorized delivery; it never makes an arbitrary bundle a
+                # feedback source or revives a withdrawn sharing permission.
+                deliveries = conn.execute(
+                    "SELECT * FROM context_deliveries WHERE bundle_ref=? AND project_ref=? "
+                    "AND state IN ('prepared','consumed','delivered')",
+                    (source_ref, project_ref),
+                ).fetchall()
+                live_delivery = False
+                for delivery in deliveries:
+                    try:
+                        _validate_delivery_bundle_live(conn, delivery, current)
+                    except ContractError:
+                        continue
+                    live_delivery = True
+                    break
+                if not live_delivery:
+                    raise ContractError("feedback_source_kind_mismatch")
             if source_existing:
                 raise ContractError("product_feedback_conflict")
 

@@ -17,6 +17,7 @@ public struct AutonomyWorkItem: Identifiable {
     public let evidenceChanged: Bool
     public let nextCheck: Date?
     public let updated: Date?
+    public let exitCheckedAt: Date?
 
     public init?(_ value: [String: Any]) {
         guard let id = value["id"] as? String, !id.isEmpty,
@@ -26,13 +27,14 @@ public struct AutonomyWorkItem: Identifiable {
         kind = value["kind"] as? String ?? ""
         summary = Self.prose(value["summary"]) ?? (kind == "memory" ? "记忆核查" : "改进事项")
         switch value["project_id"] as? String {
-        case "agi", "personal-ai-monitor": projectLabel = "AGI"
+        case "agi", "personal-ai-monitor": projectLabel = "PSI"
         case "meeting-assistant", "meeting_assistant": projectLabel = "Meeting Assistant"
         default: projectLabel = "关联项目待核对"
         }
         evidenceSummaries = (value["evidence"] as? [[String: Any]] ?? []).compactMap { Self.prose($0["summary"]) }
         let result = value["result"] as? [String: Any] ?? [:]
         resultSummary = Self.prose(result["summary"]) ?? ""
+        exitCheckedAt = (result["ui_exit"] as? [String: Any]).flatMap { Self.date($0["checked_at"]) }
         let action = Self.prose(result["action"]) ?? ""
         let rawChanges = (result["changes"] as? [String]) ?? (result["changes"] as? String).map { [$0] } ?? []
         var actualChanges = rawChanges.compactMap { Self.displayText($0, actionLabels: Self.completedActions) }
@@ -114,7 +116,7 @@ public enum MemoryCoveragePresentation {
               let sources = value["sources"] as? [[String: Any]], sources.count == 3 else {
             return ["记忆覆盖状态暂不可读取，未将未知状态记为零。"]
         }
-        let labels = ["mem0": "Mem0", "business": "业务记忆库", "agi": "AGI 事项"]
+        let labels = ["mem0": "Mem0", "business": "业务记忆库", "agi": "PSI 事项"]
         var seen = Set<String>(); var lines: [String] = []
         for row in sources {
             guard let name = row["source"] as? String, let label = labels[name], seen.insert(name).inserted,
@@ -152,10 +154,10 @@ public enum MemoryCoveragePresentation {
         }
         if let mode = value["ranking_mode"] as? String {
             switch mode {
-            case "off": lines.append("AGI 的 Jev 排序辅助已停用，按本地等待顺序处理；历史判断记录保留。")
-            case "assist": lines.append("AGI 的 Jev 排序辅助已启用，仅对获准事项按需判断。")
-            case "shadow": lines.append("AGI 的 Jev 当前仅观察，不改变处理顺序。")
-            default: lines.append("AGI 的 Jev 排序开关暂不可确认，以本地流程为准。")
+            case "off": lines.append("PSI 的 Jev 排序辅助已停用，按本地等待顺序处理；历史判断记录保留。")
+            case "assist": lines.append("PSI 的 Jev 排序辅助已启用，仅对获准事项按需判断。")
+            case "shadow": lines.append("PSI 的 Jev 当前仅观察，不改变处理顺序。")
+            default: lines.append("PSI 的 Jev 排序开关暂不可确认，以本地流程为准。")
             }
         }
         return lines

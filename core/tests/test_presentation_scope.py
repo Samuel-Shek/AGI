@@ -187,7 +187,9 @@ class DisplayScopeTests(unittest.TestCase):
         sources = SimpleNamespace(classify=task_closure.personal_scope.classify, company_stopped=Mock(return_value=True), policy=Mock(return_value={
             'company_roots':['/offline/archive/company'], 'personal_roots':['/personal'], 'personal_files':[],
             'personal_source_ids':[], 'personal_session_ids':['personal-session']}))
-        with patch.object(task_closure,'personal_scope',sources), patch.object(personal_store,'scope',sources), patch('pathlib.Path.home',return_value=self.root):
+        # This legacy-registration fixture has no native-conversation grant.
+        # Bind its missing grant explicitly rather than inheriting the host's.
+        with patch.object(task_closure,'personal_scope',sources), patch.object(personal_store,'scope',sources), patch('pathlib.Path.home',return_value=self.root), patch('activity_mvp.conversation_scope.policy_path',return_value=self.root/'missing-conversation-grant.json'):
             view=read_view(conn,DisplayScope(self.root),('incidents','messages','quotes'),personal_kind='feedback')
             self.assertEqual(view.execute('SELECT id FROM incidents').fetchall(), [('me',)])
 

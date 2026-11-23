@@ -1,3 +1,4 @@
+from tests.closure_legacy_fixture import legacy_begin
 """Synthetic operator protocol tests; never invoke a native scheduler or live DB."""
 import datetime as dt
 import contextlib
@@ -21,6 +22,7 @@ from activity_mvp.feedback.control import gate as owner_gate
 
 class ScheduleAmendmentTests(unittest.TestCase):
     def setUp(self):
+        owner = getattr(self, 'owner_session', 'original')
         self.temp = tempfile.TemporaryDirectory(); self.root = Path(self.temp.name).resolve()
         self.sources = self.root / 'reports' / 'agi-file-merge-followup-20261006'; self.sources.mkdir(parents=True)
         self.source = self.sources / 'current.json'; self.plan = self.root / 'approved-plan.json'
@@ -30,12 +32,12 @@ class ScheduleAmendmentTests(unittest.TestCase):
         self.write(self.receipt)
         self.metadata = {'kind': 'heartbeat', 'name': 'fixture', 'status': 'ACTIVE',
                          'rrule': 'FREQ=WEEKLY;BYDAY=SA;BYHOUR=20;BYMINUTE=30;BYSECOND=0;COUNT=1',
-                         'target_thread_id': 'original', 'prompt_sha256': 'a' * 64,
+                         'target_thread_id': owner, 'prompt_sha256': 'a' * 64,
                          'model': 'unchanged', 'notificationPolicy': 'failed_runs_only'}
-        self.context = {'platform': 'codex', 'session': 'original', 'turn': '00000000-0000-0000-0000-000000000001'}
+        self.context = {'platform': 'codex', 'session': owner, 'turn': '00000000-0000-0000-0000-000000000001'}
         self.database = self.root / 'data/activity.sqlite'; self.database.parent.mkdir()
         with ClosureStore(self.database) as s:
-            self.task_id = s.begin({'platform': 'codex', 'session': 'original', 'turn': 'fixture',
+            self.task_id = legacy_begin(s, {'platform': 'codex', 'session': owner, 'turn': 'fixture',
                                    'objective': 'synthetic natural observation', 'scope_root': str(self.root),
                                    'constraints': [], 'complex': False})['task_id']
             self.issue = s.register({'task_id': self.task_id, 'category': 'related', 'key': tasks.SCHEDULE_ISSUE_KEY,
@@ -45,7 +47,7 @@ class ScheduleAmendmentTests(unittest.TestCase):
                                                   'reversible': True, 'cost': False, 'new_permission': False,
                                                   'external': False, 'personal_choice': False},
                                     'recommendation': 'bounded original recheck', 'acceptance_rule': 'natural evidence required'})['issue']
-        self.binding = {'source': str(self.source), 'archive_source': None, 'owner_session': 'original',
+        self.binding = {'source': str(self.source), 'archive_source': None, 'owner_session': owner,
                         'scheduler': dict(self.metadata), 'closure_tasks': [self.task_id]}
         self.conf = {'policy': tasks.POLICY, 'tasks': {'agi': self.binding}}
         self.ledger = tasks.Ledger(self.root / 'private'); self.ledger.set('enabled', True)

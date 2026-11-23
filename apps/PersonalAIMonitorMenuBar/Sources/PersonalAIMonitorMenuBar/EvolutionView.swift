@@ -5,7 +5,7 @@ import PAMInteractionModel
 enum ContextConsumer: String, CaseIterable, Identifiable {
     case codex, agi
     var id: String { rawValue }
-    var label: String { self == .agi ? "AGI 自主进化" : "Codex" }
+    var label: String { self == .agi ? "PSI 自主进化" : "Codex" }
 }
 
 enum EvolutionAction: String { case status, replay, pause, stop, resume; case refreshContext = "refresh-context" }
@@ -52,6 +52,14 @@ final class EvolutionModel: ObservableObject {
         return contextCount > 0 ? "已有获准摘要 · 可按需整理" : "等待单独共享的摘要"
     }
     var canAnalyze: Bool { available && mode != "stopped" && !isPaused && contextCount > 0 && !busy }
+    private var lastStatusAt: Date?
+
+    /// Card appearance reuses a status read that is running or finished moments ago.
+    func statusIfStale(runner: CoreRunner, maxAge: TimeInterval = 10) async {
+        if busy { return }
+        if let lastStatusAt, Date().timeIntervalSince(lastStatusAt) < maxAge { return }
+        _ = await perform(.status, runner: runner)
+    }
 
     @discardableResult
     func perform(_ action: EvolutionAction, runner: CoreRunner) async -> Bool {
@@ -63,12 +71,13 @@ final class EvolutionModel: ObservableObject {
         guard let data = raw.data(using: .utf8),
               let result = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               !["unavailable", "rejected"].contains(result["status"] as? String ?? "") else {
-            available = false; tasks = []; contextCount = 0
+            available = false; tasks = []; contextCount = 0; lastStatusAt = nil
             message = "进化组件未响应。原有工作页面可继续使用；操作结果未确认时请刷新核对。"
             return false
         }
         if action == .status {
             apply(result)
+            lastStatusAt = available ? Date() : nil
         } else {
             let messages: [EvolutionAction: String] = [
                 .refreshContext: "已完成本地线索整理。没有调用模型或修改应用。",
@@ -81,7 +90,7 @@ final class EvolutionModel: ObservableObject {
             if let bytes = snapshot.data(using: .utf8),
                let value = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any], value["mode"] != nil {
                 apply(value)
-            } else { available = false; tasks = []; contextCount = 0 }
+            } else { available = false; tasks = []; contextCount = 0; lastStatusAt = nil }
         }
         return true
     }
@@ -126,20 +135,12 @@ struct AGIMark: View {
     let size: CGFloat
     var body: some View {
         if let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"), let image = NSImage(contentsOf: url) {
-            Image(nsImage: image).resizable().frame(width: size, height: size).accessibilityLabel("AGI")
+            Image(nsImage: image).resizable().frame(width: size, height: size).accessibilityLabel("PSI")
         } else { fallback }
     }
     private var fallback: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: size * 0.225).fill(Color(red: 0.05, green: 0.07, blue: 0.10))
-            ForEach(0..<3) { segment in
-                Circle().trim(from: 0, to: 70.0 / 360)
-                    .stroke(Color(red: 0.075, green: 0.81, blue: 0.98), lineWidth: size * 0.09)
-                    .rotationEffect(.degrees(-125 + Double(segment) * 120)).padding(size * 0.244)
-            }
-            Circle().fill(Color(red: 0.87, green: 0.98, blue: 1))
-                .frame(width: size * 0.19, height: size * 0.19)
-        }.frame(width: size, height: size).accessibilityLabel("AGI")
+        Text("PSI").font(.system(size: size * 0.3, weight: .semibold))
+            .frame(width: size, height: size).accessibilityLabel("PSI")
     }
 }
 
@@ -161,7 +162,7 @@ struct EvolutionTodayCard: View {
                 Spacer()
                 Button("查看摘要", action: open)
             }.padding(8)
-        }.task { _ = await model.perform(.status, runner: runner) }
+        }.task { await model.statusIfStale(runner: runner) }
     }
 }
 
@@ -208,7 +209,7 @@ struct EvolutionView: View {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 12) {
                         Label(model.stateLabel, systemImage: model.mode == "stopped" ? "stop.circle" : "circle.dotted").font(.title3.bold())
-                        Text("工作上下文只使用你单独共享给 AGI 的摘要。当前可整理本地线索、运行固定回放；批评与改进按下方独立授权运行，原摘要权限保持独立。")
+                        Text("工作上下文只使用你单独共享给 PSI 的摘要。当前可整理本地线索、运行固定回放；批评与改进按下方独立授权运行，原摘要权限保持独立。")
                         HStack {
                             Button("选择共享摘要…") { CodexSharingWindow.shared.show(runner: runner, consumer: .agi) }
                             Button("整理获准线索") { run(.refreshContext) }.disabled(!model.canAnalyze)
@@ -251,14 +252,14 @@ struct EvolutionView: View {
                             Button("暂停自主进化") { run(.pause) }.disabled(model.busy || !model.available || model.mode == "stopped")
                             Button("恢复本地分析") { run(.resume) }.disabled(model.busy || !model.available || (!model.isPaused && model.mode != "stopped"))
                             Spacer()
-                            Button("停止 AGI 全部后台", role: .destructive) { Task { await model.stopAll(runner: runner) } }
+                            Button("停止 PSI 全部后台", role: .destructive) { Task { await model.stopAll(runner: runner) } }
                         }
                         Text("暂停只影响自主进化。全部停止会分别核对进化与工作记录；恢复本地分析不会重新开启屏幕采集。")
                             .font(.caption).foregroundStyle(.secondary)
                         if !model.stopResults.isEmpty { Text(model.stopResults).textSelection(.enabled) }
                     }.padding(10)
                 }
-                Text("AGI · 进化组件 \(model.componentVersion) · 兼容原有本地数据与 Codex 授权")
+                Text("PSI · 进化组件 \(model.componentVersion) · 兼容原有本地数据与 Codex 授权")
                     .font(.caption).foregroundStyle(.secondary)
             }.padding(24)
         }
@@ -337,7 +338,8 @@ private struct AutonomyWorkView: View {
                                 }
                                 if !item.verificationSummary.isEmpty { Text("验证结果：" + item.verificationSummary) }
                                 if !item.limitation.isEmpty { Text(item.limitation).foregroundStyle(.secondary) }
-                                if let date = item.nextCheck { Text("下次核对：" + LocalStatusTime.label(date)).font(.caption).foregroundStyle(.secondary) }
+                                if let date = item.exitCheckedAt { Text("上次退出检查：" + LocalStatusTime.label(date)) }
+                                if snapshot.enabled && !snapshot.paused && !model.paused, let date = item.nextCheck { Text("下次核对：" + LocalStatusTime.label(date)).font(.caption).foregroundStyle(.secondary) }
                                 if let date = item.updated { Text("最近更新：" + LocalStatusTime.label(date)).font(.caption).foregroundStyle(.secondary) }
                             }.padding(.vertical, 8).textSelection(.enabled)
                         } label: {

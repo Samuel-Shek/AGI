@@ -1,6 +1,6 @@
 # Public source scope
 
-This repository is a clean source snapshot with no private commit history.
+PSI retains the original AGI repository address. This repository is a clean source snapshot with no private commit history.
 It preserves the app, core algorithms, controller boundaries, tests, assets,
 AGPL license, and third-party notices. Personal facts, private deployment notes,
 live policies, credentials, runtime records, and private schedule registrations
@@ -53,3 +53,8 @@ original disk UUID or private archive destination and refuses use until a local
 operator supplies and qualifies their own adapter. Manual authorization still
 requires the operator's native runtime registration; bundling its code does not
 provide that registration.
+
+The public recovery adapter is unconfigured. Integrators must independently qualify
+a local backup manager before installing it at
+`~/Library/Application Support/PSI/adapters/backup_manager.py`. Recovery policies
+carry no preapproved attribute exceptions.

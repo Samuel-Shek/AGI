@@ -1,4 +1,5 @@
 """Isolated applicability checks; no production task/data changes."""
+from tests.closure_legacy_fixture import legacy_begin
 import os
 import json
 import hashlib
@@ -24,7 +25,7 @@ class ApplicabilityTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def begin(self, **extra):
-        return self.store.begin({**self.payload, **extra})['task_id']
+        return legacy_begin(self.store, {**self.payload, **extra})['task_id']
 
     def issue(self, task, key='one'):
         return self.store.register(dict(task_id=task, category='main', key=key, summary='真实未完执行',
@@ -128,10 +129,10 @@ class ApplicabilityTests(unittest.TestCase):
 
     def test_legacy_complex_and_simple_keep_their_routing(self):
         payload={k:v for k,v in self.payload.items() if k not in {'closure_mode','artifact_paths'}}
-        task=self.store.begin(payload)['task_id']
+        task=legacy_begin(self.store, payload)['task_id']
         self.assertTrue(self.store.task_status(task)['closure_required'])
         with self.assertRaises(ValueError): self.begin()
-        simple=self.store.begin({**payload,'turn':'simple','complex':False})['task_id']
+        simple=legacy_begin(self.store, {**payload,'turn':'simple','complex':False})['task_id']
         self.assertFalse(self.store.task_status(simple)['closure_required'])
 
     def test_full_rebegin_does_not_reset_existing_guard(self):

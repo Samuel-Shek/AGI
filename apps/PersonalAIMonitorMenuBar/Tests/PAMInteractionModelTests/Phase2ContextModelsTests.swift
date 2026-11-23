@@ -2046,7 +2046,71 @@ final class Phase2ContextModelsTests: XCTestCase {
         XCTAssertTrue(withdrawn.resources.isEmpty); XCTAssertTrue(withdrawn.closures.isEmpty)
         XCTAssertEqual(withdrawn.status, "partial"); XCTAssertNil(withdrawn.decisionCount); XCTAssertNil(withdrawn.badge)
     }
-    func testAttentionReadCoalescingPreservesRequiredFollowUpAndWithdrawal() throws {
+    @MainActor
+    func testAttentionReadCoalescingPreservesRequiredFollowUpAndWithdrawal() async throws {
+        let absent: [String:Any] = ["interface":"attention-handoff","status":"ok","handoff":NSNull(),"queue_state":"absent","history_unknown":true]
+        XCTAssertTrue(AttentionClosureHandoffRead.accepts(absent,unconfirmedRequest:false,previousStatus:nil))
+        XCTAssertFalse(AttentionClosureHandoffRead.accepts(absent,unconfirmedRequest:true,previousStatus:nil))
+        for previous in ["queued","preparing","opening","sending","verifying","uncertain","failed"] {
+            XCTAssertFalse(AttentionClosureHandoffRead.accepts(absent,unconfirmedRequest:false,previousStatus:previous))
+        }
+        let emptyPresent: [String:Any] = ["interface":"attention-handoff","status":"ok","handoff":NSNull(),"queue_state":"present","history_unknown":false]
+        XCTAssertFalse(AttentionClosureHandoffRead.accepts(emptyPresent,unconfirmedRequest:true,previousStatus:nil))
+        XCTAssertFalse(AttentionClosureHandoffRead.accepts(emptyPresent,unconfirmedRequest:false,previousStatus:"queued"))
+        XCTAssertTrue(AttentionClosureHandoffRead.accepts(emptyPresent,unconfirmedRequest:false,previousStatus:nil))
+        XCTAssertTrue(AttentionClosureHandoffRead.accepts(["history_unknown":false,"handoff":["submission_id":"original","status":"delivered"]],unconfirmedRequest:true,previousStatus:"queued"))
+        let choices = ["accept_recommendation", "cancel", "keep_waiting"]
+        var currentChoice = true, previewCalls = 0, decideCalls = 0
+        var decisions = AttentionSubmissions()
+        let choiceKey = AttentionSubmissions.key("fixture", "7")
+        let previewValue: [String:Any] = ["issue_id":"fixture", "revision":7, "token":"bound-token", "default":NSNull(), "choices":choices]
+        let previewRaw = String(data:try JSONSerialization.data(withJSONObject:previewValue),encoding:.utf8)!
+        // Rendering and refreshing the source model never ask for a token.
+        XCTAssertEqual(previewCalls,0); XCTAssertEqual(decideCalls,0)
+        for choice in choices {
+            let result = await AttentionClosureChoice.submit(id:"fixture", revision:"7", choice:choice,
+                current:{ currentChoice }, preview:{ previewCalls += 1; return previewRaw },
+                decide:{ input in
+                    decideCalls += 1
+                    let payload = try! JSONSerialization.jsonObject(with:Data(input.utf8)) as! [String:Any]
+                    XCTAssertEqual(payload["choice"] as? String,choice)
+                    XCTAssertEqual(payload["token"] as? String,"bound-token")
+                    return "{\"id\":\"fixture\",\"revision\":8,\"state\":\"decision\"}"
+                })
+            XCTAssertEqual(result.outcome,.recorded)
+        }
+        XCTAssertEqual(previewCalls,3); XCTAssertEqual(decideCalls,3)
+        // One reservation covers both awaits, so rapid repeated clicks cannot enter.
+        XCTAssertTrue(decisions.begin(choiceKey)); XCTAssertFalse(decisions.begin(choiceKey))
+        let stale = await AttentionClosureChoice.submit(id:"fixture", revision:"7", choice:"cancel",
+            current:{currentChoice}, preview:{ currentChoice = false; return previewRaw },
+            decide:{_ in decideCalls += 1; return ""})
+        XCTAssertEqual(stale.outcome,.rejected); XCTAssertEqual(decideCalls,3)
+        decisions.finish(choiceKey,receipt:stale.raw,outcome:stale.outcome)
+        XCTAssertFalse(decisions.pending.contains(choiceKey))
+        decisions.verifiedRead(id:"fixture",revision:"7"); XCTAssertTrue(decisions.begin(choiceKey))
+        currentChoice = true
+        var wrongVersion = previewValue; wrongVersion["revision"] = 8
+        for raw in ["", "{}", String(data:try JSONSerialization.data(withJSONObject:wrongVersion),encoding:.utf8)!] {
+            let rejected = await AttentionClosureChoice.submit(id:"fixture",revision:"7",choice:"cancel",current:{true},preview:{raw},decide:{_ in decideCalls += 1;return ""})
+            XCTAssertEqual(rejected.outcome,.rejected)
+        }
+        XCTAssertEqual(decideCalls,3)
+        let unknown = await AttentionClosureChoice.submit(id:"fixture",revision:"7",choice:"keep_waiting",current:{true},preview:{previewRaw},decide:{_ in decideCalls += 1;return "truncated"})
+        XCTAssertEqual(unknown.outcome,.unknown)
+        decisions.finish(choiceKey,receipt:unknown.raw,outcome:unknown.outcome)
+        XCTAssertFalse(decisions.begin(choiceKey)); XCTAssertEqual(decideCalls,4)
+        let trace: [String: Any] = ["interface":"task-closure-trace", "contract":1, "raw_access":false,
+            "id":"closure:fixture", "revision":"7", "state":"received", "label":"已接收，结果待核验",
+            "timeline":[["sequence":1,"label":"已登记","at":1.0]],
+            "metrics":["explicit_decision_count":0,"duplicate_registration_count":2,
+                       "notification_request_count":NSNull(),"registration_to_acceptance_seconds":NSNull()]]
+        let parsed = try XCTUnwrap(ClosureTrace(trace, id:"closure:fixture", revision:"7"))
+        XCTAssertEqual(parsed.state,"received"); XCTAssertNil(parsed.elapsedSeconds)
+        XCTAssertEqual(parsed.duplicates,2); XCTAssertNil(parsed.notifications)
+        XCTAssertNil(ClosureTrace(trace, id:"closure:fixture", revision:"8"))
+        var repeated = trace; repeated["timeline"] = [["sequence":1,"label":"已登记"],["sequence":1,"label":"重复"]]
+        XCTAssertNil(ClosureTrace(repeated, id:"closure:fixture", revision:"7"))
         var reads = AttentionRefreshReads()
         let first = try XCTUnwrap(reads.request(coalescingIfLoading: true))
         XCTAssertNil(reads.request(coalescingIfLoading: true))
@@ -2077,20 +2141,20 @@ final class Phase2ContextModelsTests: XCTestCase {
         XCTAssertEqual(displayed.decisionCount, 1); XCTAssertNil(displayed.workbenchItem("retired"))
         XCTAssertFalse(generations.isCurrent(lateRequest))
     }
-    func testIdlePublicationUntouchedBackgroundCanYieldForFreshRequest() {
-        XCTAssertTrue(IdlePublicationPolicy.permitsExit(untouched: true, active: false, modal: false, windowAtRisk: false, age: 1))
+    func testIdlePublicationCleanCanExitAfterInteraction() {
+        XCTAssertEqual(IdlePublicationPolicy.reasons(drafts: [.clean], active: false, menuOpen: false, modal: false, windowAtRisk: false, age: 1), [])
     }
-    func testIdlePublicationInteractionStaysProtectedAfterWindowCloses() {
-        XCTAssertFalse(IdlePublicationPolicy.permitsExit(untouched: false, active: false, modal: false, windowAtRisk: false, age: 1))
-    }
-    func testIdlePublicationWindowAndDialogAndActiveAppPreventExit() {
-        XCTAssertFalse(IdlePublicationPolicy.permitsExit(untouched: true, active: false, modal: false, windowAtRisk: true, age: 1))
-        XCTAssertFalse(IdlePublicationPolicy.permitsExit(untouched: true, active: false, modal: true, windowAtRisk: false, age: 1))
-        XCTAssertFalse(IdlePublicationPolicy.permitsExit(untouched: true, active: true, modal: false, windowAtRisk: false, age: 1))
+    func testIdlePublicationDraftAndCurrentWindowProtection() {
+        for state in [PublicationDraftState.Status.unsaved, .saving, .saveFailed, .unknown] {
+            XCTAssertEqual(IdlePublicationPolicy.reasons(drafts: [state], active: false, menuOpen: false, modal: false, windowAtRisk: false, age: 1), [state.rawValue])
+        }
+        for flags in [(true,false,false,false),(false,true,false,false),(false,false,true,false),(false,false,false,true)] {
+            XCTAssertEqual(IdlePublicationPolicy.reasons(drafts: [], active: flags.0, menuOpen: flags.1, modal: flags.2, windowAtRisk: flags.3, age: 1), ["interface_in_use"])
+        }
     }
     func testIdlePublicationExpiredAndFutureRequestsCannotQuitApp() {
         for age in [-1.0, 10.1, Double.infinity, Double.nan] {
-            XCTAssertFalse(IdlePublicationPolicy.permitsExit(untouched: true, active: false, modal: false, windowAtRisk: false, age: age))
+            XCTAssertEqual(IdlePublicationPolicy.reasons(drafts: [], active: false, menuOpen: false, modal: false, windowAtRisk: false, age: age), ["request_expired"])
         }
     }
 
@@ -2222,6 +2286,107 @@ final class Phase2ContextModelsTests: XCTestCase {
         XCTAssertFalse(reads.coordinator.isRunning)
     }
 
+    // Automatic-update draft and save-receipt regression coverage.
+    func testEditAndUndoCompareCurrentValueToSavedBaseline() {
+        var draft = PublicationDraftState("original")
+        XCTAssertEqual(draft.status, .clean)
+        draft.edit("changed"); XCTAssertEqual(draft.status, .unsaved)
+        draft.edit("original"); XCTAssertEqual(draft.status, .clean)
+    }
+    func testDefaultValueSubmissionStillProtectsInFlightOperation() {
+        var draft = PublicationDraftState()
+        let save = draft.beginSave(); XCTAssertEqual(draft.status, .saving)
+        draft.finish(save, outcome: .clean); XCTAssertEqual(draft.status, .clean)
+    }
+    func testLateReceiptCannotClearNewEdit() {
+        var draft = PublicationDraftState("a")
+        draft.edit("b"); let first = draft.beginSave()
+        draft.edit("c"); draft.finish(first, outcome: .clean)
+        XCTAssertEqual(draft.saved, "b"); XCTAssertEqual(draft.status, .unsaved)
+        let second = draft.beginSave(); draft.finish(second, outcome: .clean)
+        XCTAssertEqual(draft.status, .clean)
+    }
+    func testSameTextAtNewRevisionCannotUseAnOlderReceipt() {
+        var draft = PublicationDraftState("a")
+        draft.edit("b"); let old = draft.beginSave()
+        draft.edit("c"); draft.edit("b")
+        draft.finish(old, outcome: .clean)
+        XCTAssertEqual(draft.status, .unsaved)
+        let latest = draft.beginSave(); draft.finish(latest, outcome: .clean)
+        XCTAssertEqual(draft.status, .clean)
+    }
+    func testOutOfOrderReceiptsCannotMoveBaselineBack() {
+        var draft = PublicationDraftState("a")
+        draft.edit("b"); let first = draft.beginSave()
+        draft.edit("c"); let second = draft.beginSave()
+        draft.finish(second, outcome: .clean); XCTAssertEqual(draft.status, .saving)
+        draft.finish(first, outcome: .clean)
+        XCTAssertEqual(draft.saved, "c"); XCTAssertEqual(draft.status, .clean)
+    }
+    func testRevertDuringSaveRemainsProtectedUntilActualResultIsKnown() {
+        var draft = PublicationDraftState("a")
+        draft.edit("b"); let save = draft.beginSave()
+        draft.edit("a"); XCTAssertEqual(draft.status, .saving)
+        draft.finish(save, outcome: .clean)
+        XCTAssertEqual(draft.status, .unsaved)
+        draft.discard(); XCTAssertEqual(draft.current, "b"); XCTAssertEqual(draft.status, .clean)
+    }
+    func testFailureCanBeRetriedOrExplicitlyDiscarded() {
+        var draft = PublicationDraftState("a")
+        draft.edit("b"); let save = draft.beginSave()
+        draft.finish(save, outcome: .saveFailed); XCTAssertEqual(draft.status, .saveFailed)
+        let retry = draft.beginSave(); draft.finish(retry, outcome: .clean)
+        XCTAssertEqual(draft.status, .clean)
+        draft.edit("c"); let failed = draft.beginSave()
+        draft.finish(failed, outcome: .saveFailed); draft.discard()
+        XCTAssertEqual(draft.current, "b"); XCTAssertEqual(draft.status, .clean)
+    }
+    func testUnknownRequiresExactReadbackAndCannotBeClearedByUnrelatedSuccess() {
+        var draft = PublicationDraftState("a")
+        draft.edit("b"); let first = draft.beginSave()
+        draft.finish(first, outcome: .unknown); XCTAssertEqual(draft.status, .unknown)
+        draft.edit("c"); let next = draft.beginSave()
+        draft.finish(next, outcome: .clean); XCTAssertEqual(draft.status, .unknown)
+        draft.discard(); XCTAssertEqual(draft.status, .unknown)
+        draft.finish(first, outcome: .clean)
+        XCTAssertEqual(draft.saved, "c"); XCTAssertEqual(draft.status, .clean)
+    }
+    func testOtherFormAndDuplicateReceiptsCannotReleaseProtection() {
+        var first = PublicationDraftState("a"), second = PublicationDraftState("b")
+        first.edit("new"); second.edit("different")
+        let a = first.beginSave(), b = second.beginSave()
+        second.finish(a, outcome: .clean); XCTAssertEqual(second.status, .saving)
+        first.finish(a, outcome: .clean); first.edit("newer")
+        first.finish(a, outcome: .clean); XCTAssertEqual(first.status, .unsaved)
+        second.finish(b, outcome: .clean); XCTAssertEqual(second.status, .clean)
+    }
+    func testExactReadbackClearsOnlyItsSubmissionAndRetainsRepeatableDefer() {
+        var submissions = AttentionSubmissions()
+        let first = AttentionSubmissions.key("one", "version"), other = AttentionSubmissions.key("two", "version")
+        XCTAssertTrue(submissions.begin(first)); XCTAssertTrue(submissions.begin(other))
+        submissions.finish(first, receipt: "unknown", outcome: .unknown)
+        submissions.finish(other, receipt: "unknown", outcome: .unknown)
+        submissions.finish(first, receipt: "exact receipt", outcome: .recorded, deferred: true)
+        XCTAssertFalse(submissions.uncertain.contains(first))
+        XCTAssertTrue(submissions.uncertain.contains(other))
+        submissions.verifiedRead(id: "one", revision: "version", unresolvedActivity: true)
+        XCTAssertTrue(submissions.begin(first))
+    }
+    func testMemoryPrewriteRejectionAllowsNewPreviewAndExplicitRetry() {
+        for error in ["confirmation digest does not match the previewed batch", "record_changed:fixture", "evidence_changed:fixture", "source_not_in_display_scope"] {
+            XCTAssertEqual(AttentionWriteOutcome.memory(["interface":"memory-review", "ok":false, "error":error]), .rejected)
+        }
+        XCTAssertEqual(AttentionWriteOutcome.memory(["interface":"memory-review", "ok":false, "error":"unrecognized result"]), .unknown)
+    }
+    func testMultipleFormsAndEveryCurrentUIBlocker() {
+        for status in [PublicationDraftState.Status.unsaved, .saving, .saveFailed, .unknown] {
+            XCTAssertFalse(IdlePublicationPolicy.reasons(drafts: [.clean, status], active: false, menuOpen: false, modal: false, windowAtRisk: false, age: 0).isEmpty)
+        }
+        XCTAssertEqual(IdlePublicationPolicy.reasons(drafts: [.clean], active: false, menuOpen: false, modal: false, windowAtRisk: false, age: 0), [])
+        XCTAssertEqual(IdlePublicationPolicy.reasons(drafts: [.clean], active: false, menuOpen: true, modal: false, windowAtRisk: false, age: 0), ["interface_in_use"])
+        XCTAssertEqual(IdlePublicationPolicy.reasons(drafts: [.clean], active: false, menuOpen: false, modal: false, windowAtRisk: false, age: 2.6), ["request_expired"])
+    }
+
 }
 
 @MainActor
@@ -2293,5 +2458,6 @@ private final class StatusRefreshReadHarness {
         quickGate.release()
         fullGates.forEach { $0.release() }
     }
+
 }
 #endif

@@ -240,4 +240,4 @@ def _sample(values) -> list[str]:
 
 def _is_application_support(root_dir: str | Path) -> bool:
     normalized = str(Path(root_dir).expanduser().resolve())
-    return "/Library/Application Support/Personal AI Monitor" in normalized
+    return any(name in normalized for name in ("/Library/Application Support/PSI", "/Library/Application Support/AGI", "/Library/Application Support/Personal AI Monitor"))

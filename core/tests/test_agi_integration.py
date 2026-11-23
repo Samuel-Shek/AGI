@@ -33,7 +33,7 @@ class AGIIntegrationTests(unittest.TestCase):
         self.addCleanup(self.controller.close)
 
     def note(self, text="重复手动整理：这是合成测试，不代表真实问题。"):
-        return agi_bridge.owner_action(self.conn, "manual-note", {"summary": text, "project": "Synthetic AGI",
+        return agi_bridge.owner_action(self.conn, "manual-note", {"summary": text, "project": "Synthetic PSI",
             "workstream": "fixture", "confirm_owner": True})["reference"]
 
     def share(self, reference, module=agi_bridge):

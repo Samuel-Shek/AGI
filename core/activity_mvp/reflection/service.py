@@ -51,7 +51,7 @@ def notify(feedback):
                 store.conn.execute('COMMIT')
             except BaseException:store.conn.execute('ROLLBACK');raise
             try:
-                process=subprocess.Popen(['/usr/bin/osascript','-e','display notification "有对话依据提示一处可能的思路停滞。打开 AGI 的思考与反思查看依据和其他解释。" with title "AGI 思考与反思"'],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+                process=subprocess.Popen(['/usr/bin/osascript','-e','display notification "有对话依据提示一处可能的思路停滞。打开 PSI 的思考与反思查看依据和其他解释。" with title "PSI 思考与反思"'],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
             except OSError:
                 store.set('last_notification_error','通知提交结果不明，保留尝试，不自动重发。')
                 return {'requested':0,'delivery_observed':False,'unknown':True}

@@ -50,3 +50,31 @@ caller must verify the semantic mapping against original authorization; the API
 cannot infer equivalent permission from free text. Sending also rechecks the
 exact issue/version/authorization binding and current evidence after preparation
 and after waiting for the original desktop owner, before native side effects.
+
+
+## Source-bound result acceptance
+
+New Codex execution registrations require a version-1 requirements contract,
+including native source hashes, mandatory conditions and file/JSON/reviewer
+checks. The native source binding identifies the message; it does not prove
+semantic comprehension or confer permission. Other platforms and historical
+rows retain compatibility without retroactive goal certification.
+
+The existing audit binds source coverage, actual outcomes and the whole final
+response in one review. Missing or changed outputs invalidate the goal result.
+Registered issue completion is reported separately from goal completion: the former only means no registered item remains open in the permitted scope, even without an audit. Goal completion still requires an effective audit and the original independent-review condition. Review
+stages distinguish content, installation, runtime and natural observation.
+Optional improvements do not extend the original work or prevent completion.
+
+Explicit continuation keeps its original lineage, source requirements and
+unresolved findings. Known semantic omissions retain their first identity and
+can only resolve against a newly added mandatory item with the same condition
+and source, or a later reviewed user removal. Audit commit rechecks both the
+contract and omission history; no new background, secondary ledger or model
+service is introduced. Existing cancellation, real choices, scope checks and
+one corrective Stop remain unchanged. Hook metadata gaps and semantic review
+fallibility remain explicit limitations.
+
+Observation freshness is part of each time-sensitive requirement. A `freshness` rule binds a scope-checked JSON receipt path, its original `observed_at_key`, and `expires_at_key` and/or positive finite `max_age_seconds`. Runtime/natural review outcomes must carry it; file/JSON outcomes may use it when their original goal concerns current state. Audit time and file mtime never refresh an old observation. Every review and status checks expiry, rejects missing/non-finite/future timestamps, and binds the receipt bytes. New observation bytes need re-review; extending/removing the contract limit is a weakened requirement. Static artifacts retain content/version checks without artificial expiry.
+
+The existing review event retains the earliest accepted deadline for each source-bound observation. Editing only its expiry cannot renew it, including after a waiting review or continuation. History is rechecked atomically before acceptance. Both result and freshness receipt paths pass the same source-retirement and temporary-access checks before any observation is read.

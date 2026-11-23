@@ -26,7 +26,7 @@ def toolchain_identity(*, verify_signature=False):
     info_path = XCODE/'Contents/Info.plist'
     if info_path.is_symlink(): raise PermissionError('swift_test_toolchain_alias')
     info = plistlib.loads(info_path.read_bytes())
-    if info.get('CFBundleIdentifier') != 'com.apple.dt.Xcode' or info.get('CFBundleShortVersionString') != '27.0':
+    if info.get('CFBundleIdentifier') != 'com.apple.dt.Xcode' or info.get('CFBundleShortVersionString') != '27.2':
         raise PermissionError('swift_test_toolchain_version_unapproved')
     if verify_signature:
         subprocess.run(['/usr/bin/codesign','--verify','--strict','-R',

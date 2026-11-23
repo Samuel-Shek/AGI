@@ -16,7 +16,7 @@ import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-# Set only by the trusted AGI adapter; never chosen by MCP arguments.
+# Set only by the trusted PSI adapter; never chosen by MCP arguments.
 _CONSUMER = ContextVar("approved_context_consumer", default="codex")
 
 @contextmanager
@@ -75,8 +75,14 @@ def _secret(conn, *, create=False):
         return value
 
 
+class OwnerActionRejected(ValueError):
+    """A definite validation/contract rejection, not an unknown write outcome."""
+
+
 def _require_success(result, allowed):
     if result.get("status") not in allowed:
+        if result.get("save_state") != "unknown" and result.get("status") in {"rejected", "conflict", "blocked", "disabled", "stale"}:
+            raise OwnerActionRejected(result.get("reason_code") or "context_action_rejected")
         raise ValueError(result.get("reason_code") or "context_action_rejected")
     return result
 
@@ -163,18 +169,18 @@ def owner_snapshot(conn):
 
 def share_selection(conn, references):
     if not isinstance(references, list) or not 1 <= len(references) <= 50 or len(set(references)) != len(references):
-        raise ValueError("invalid_context_selection")
+        raise OwnerActionRejected("invalid_context_selection")
     bundle = context.build_context_bundle(conn, include_clues=False, limit=200)
     chosen = [item for item in bundle.get("verified_contexts", []) if item["context_ref"] in references]
     if len(chosen) != len(references) or any(not _owner_item(conn, item) for item in chosen):
-        raise ValueError("selected_context_unavailable")
+        raise OwnerActionRejected("selected_context_unavailable")
     projects = {item["project"]["ref"] for item in chosen}
     if len(projects) != 1:
-        raise ValueError("select_one_project")
+        raise OwnerActionRejected("select_one_project")
     project = next(iter(projects))
     target = _target(project)
     secret = _secret(conn, create=True)
-    _require_success(context.register_context_label(conn, kind="target", ref=target, label="Codex 已授权摘要" if _consumer() == "codex" else "AGI 本地已授权摘要",
+    _require_success(context.register_context_label(conn, kind="target", ref=target, label="Codex 已授权摘要" if _consumer() == "codex" else "PSI 本地已授权摘要",
         project_ref=project, target_scope="external", export_policy="explicit_export",
         allowed_privacy_classes=["private_local"]), {"registered", "replayed"})
     principal, key = _identity(project)
@@ -189,30 +195,32 @@ def share_selection(conn, references):
 
 def _find_share(conn, key):
     if not isinstance(key, str) or len(key) > 80:
-        raise ValueError("share_unavailable")
+        raise OwnerActionRejected("share_unavailable")
     for delivery, _ in _live_shares(conn):
         if secrets.compare_digest(_ref("shared", delivery["delivery_ref"]), key):
             return delivery
-    raise ValueError("share_unavailable")
+    raise OwnerActionRejected("share_unavailable")
 
 
 def owner_action(conn, action, payload):
+    receipt_only = action in {"manual-note-receipt", "feedback-receipt", "confirm-card-receipt", "share-receipt", "withdraw-receipt"}
+    action = action.removesuffix("-receipt") if receipt_only else action
     if action not in OWNER_ACTIONS or not isinstance(payload, dict):
-        raise ValueError("unsupported_owner_action")
+        raise OwnerActionRejected("unsupported_owner_action")
     fields = {"snapshot": set(), "manual-note": {"summary", "project", "workstream", "outcome", "started_at", "request_id", "confirm_owner"},
               "confirm-card": {"confirmation_ref", "expected_revision", "confirm_owner", "request_id"},
               "share": {"references", "confirm_owner"}, "withdraw": {"share_key", "confirm_owner"},
               "feedback": {"share_key", "useful", "resume_seconds", "confirm_owner"}}[action]
     if set(payload) - fields:
-        raise ValueError("unexpected_owner_fields")
+        raise OwnerActionRejected("unexpected_owner_fields")
     if action == "snapshot":
         return owner_snapshot(conn)
     if payload.get("confirm_owner") is not True:
-        raise ValueError("explicit_owner_confirmation_required")
+        raise OwnerActionRejected("explicit_owner_confirmation_required")
     if action in {"manual-note", "confirm-card"}:
         request_id = payload.get("request_id") or secrets.token_hex(16)
         if not isinstance(request_id, str) or len(request_id) > 100:
-            raise ValueError("invalid_request_id")
+            raise OwnerActionRejected("invalid_request_id")
         data = {"contract_version": context.OWNER_CONTEXT_ACTION_VERSION,
                 "action": "manual_note" if action == "manual-note" else "confirm_card",
                 "idempotency_key": _ref("idem", request_id),
@@ -224,9 +232,26 @@ def owner_action(conn, action, payload):
         else:
             data.update(confirmation_ref=payload.get("confirmation_ref"), expected_revision=payload.get("expected_revision"),
                         answer="occurred", reason="other")
-        result = context.owner_context_action(conn, json.dumps(data))
+        result = context.owner_context_action(conn, json.dumps(data), receipt_only=receipt_only)
+        if receipt_only:
+            return result
         _require_success(result, {"recorded", "verified", "replayed", "accepted"})
         return {"status": "confirmed", "reference": result.get("context_ref"), "raw_access": False}
+    if receipt_only and action in {"share", "withdraw"}:
+        with context._context_authorization_lock(conn, exclusive=False):
+            if action == "share":
+                references = payload.get("references")
+                if not isinstance(references, list) or not references or not all(isinstance(item, str) for item in references):
+                    raise ValueError("invalid_context_selection")
+                matched = any(set(references) == {item["context_ref"] for item in items} for _, items in _live_shares(conn))
+            else:
+                key = payload.get("share_key")
+                if not isinstance(key, str):
+                    raise ValueError("share_unavailable")
+                rows = conn.execute("SELECT delivery_ref,project_ref,target_ref,state FROM context_deliveries ORDER BY created_at DESC LIMIT 200").fetchall()
+                matched = any(row["target_ref"] == _target(row["project_ref"]) and row["state"] == "revoked"
+                              and secrets.compare_digest(_ref("shared", row["delivery_ref"]), key) for row in rows)
+            return {"interface":"sharing-action-receipt", "status":"confirmed" if matched else "not_confirmed", "raw_access":False}
     if action == "share":
         return share_selection(conn, payload.get("references"))
     if action == "withdraw":
@@ -240,6 +265,14 @@ def owner_action(conn, action, payload):
             conn.commit()
         return {"status": "withdrawn", "raw_access": False}
     delivery = _find_share(conn, payload.get("share_key"))
+    if receipt_only:
+        if type(payload.get("useful")) is not bool:
+            raise ValueError("owner_feedback_required")
+        with context._context_authorization_lock(conn, exclusive=False):
+            delivery = _find_share(conn, payload.get("share_key"))
+            row = conn.execute("SELECT useful,resume_seconds FROM context_product_feedback WHERE source_kind='bundle' AND source_ref=? ORDER BY created_at DESC LIMIT 1", (delivery["bundle_ref"],)).fetchone()
+            matched = bool(row and bool(row["useful"]) == payload.get("useful") and row["resume_seconds"] == payload.get("resume_seconds"))
+            return {"interface":"sharing-feedback-receipt", "status":"confirmed" if matched else "not_confirmed", "raw_access":False}
     data = {"contract_version": context.PRODUCT_FEEDBACK_VERSION, "idempotency_key": "idem_" + secrets.token_hex(16),
             "source_kind": "bundle", "source_ref": delivery["bundle_ref"], "project_ref": delivery["project_ref"],
             "useful": payload.get("useful"), "resume_seconds": payload.get("resume_seconds")}

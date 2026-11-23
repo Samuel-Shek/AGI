@@ -450,7 +450,7 @@ class DocumentChangeTests(unittest.TestCase):
     def _stop_worker(worker: dict) -> None:
         joined = stop_document_change_worker(worker, timeout_seconds=20)
         expected: list[str] = []
-        for name in ("reader", "consumer", "validator", "processor", "monitor"):
+        for name in ("reader", "consumer", "validator", "processor", "monitor", "reconciler"):
             thread = worker.get(name)
             if thread is not None:
                 expected.append(name)
@@ -496,8 +496,8 @@ class DocumentChangeTests(unittest.TestCase):
         self.assertIn("coverage_incomplete", result["limitations"])
         self.assertNotIn("requested_range_not_fully_covered", result["limitations"])
 
-    def test_schema_32_additive_and_newer_schema_refuses_downgrade(self):
-        self.assertEqual(SCHEMA_VERSION, 32)
+    def test_schema_33_additive_and_newer_schema_refuses_downgrade(self):
+        self.assertEqual(SCHEMA_VERSION, 33)
         tables = {row["name"] for row in self.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertTrue({"file_watch_roots", "file_watch_checkpoints", "file_watch_state", "file_change_events"} <= tables)
         with self.assertRaisesRegex(
@@ -511,7 +511,7 @@ class DocumentChangeTests(unittest.TestCase):
             self.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],
             "32",
         )
-        self.conn.execute("UPDATE meta SET value='33' WHERE key='schema_version'")
+        self.conn.execute("UPDATE meta SET value=? WHERE key='schema_version'", (str(SCHEMA_VERSION + 1),))
         self.conn.commit()
         with self.assertRaisesRegex(sqlite3.DatabaseError, "refusing downgrade"):
             init_schema(self.conn)
@@ -866,7 +866,9 @@ class DocumentChangeTests(unittest.TestCase):
         original.execute("DROP TRIGGER pam_schema31_guard_insert")
         original.execute("DROP TRIGGER pam_schema31_guard_update")
         original.execute("DROP TRIGGER pam_schema32_guard_insert")
+        original.execute("DROP TRIGGER pam_schema33_guard_insert")
         original.execute("DROP TRIGGER pam_schema32_guard_update")
+        original.execute("DROP TRIGGER pam_schema33_guard_update")
         original.execute("UPDATE meta SET value='23' WHERE key='schema_version'")
         original.commit()
         original.close()
@@ -7838,6 +7840,7 @@ with mock.patch.object(module, "process_document_event", side_effect=hold_final)
             "root_scan_issue_counts",
             "snapshot_io_failure_details",
             "stage",
+            "baseline_kind",
             "pass_number",
             "max_passes",
             "root_count",
@@ -7877,6 +7880,7 @@ with mock.patch.object(module, "process_document_event", side_effect=hold_final)
             "root_scan_issue_counts",
             "snapshot_io_failure_details",
             "stage",
+            "baseline_kind",
             "queue_depths",
             "helper_stopping",
             "epoch_active",
@@ -7884,6 +7888,7 @@ with mock.patch.object(module, "process_document_event", side_effect=hold_final)
         }
         for diagnostic in progress:
             self.assertEqual(set(diagnostic), expected_fields)
+            self.assertEqual(diagnostic["baseline_kind"], "startup")
             self.assertEqual(
                 set(diagnostic["queue_depths"]),
                 {"event", "validation", "processor"},
@@ -8420,6 +8425,60 @@ with mock.patch.object(module, "process_document_event", side_effect=hold_final)
         self.assertNotIn(private_path.name, serialized)
         self.assertNotIn("987654321", serialized)
         self.assertNotIn("event_id", diagnostic)
+
+    def test_consumer_exception_diagnostic_keeps_failure_without_private_details(self):
+        diagnostics = []
+        worker, controlled = self._start_controlled_worker(diagnostic_sink=diagnostics.append)
+        failure = sqlite3.OperationalError("private SQL and /private/customer/source.md")
+        failure.sqlite_errorcode = sqlite3.SQLITE_BUSY | (2 << 8)
+        try:
+            with mock.patch.object(document_changes_module, "_definitely_ignored_event", side_effect=failure):
+                controlled.emit({"path": str(self.watch / "private-customer.md"),
+                                 "event_id": "700", "observed_at": datetime.now(timezone.utc).isoformat(),
+                                 "flags": ["item_modified"]})
+                self.assertTrue(self._wait_until(lambda: controlled.terminated))
+        finally:
+            self._stop_worker(worker)
+        failures = [d for d in diagnostics if d.get("event") == "document_change_consumer_exception"]
+        self.assertEqual(len(failures), 1)
+        diagnostic = failures[0]
+        self.assertEqual(diagnostic["exception_type"], "OperationalError")
+        self.assertEqual(diagnostic["sqlite_code"], "SQLITE_BUSY")
+        self.assertEqual(diagnostic["stage"], "consumer")
+        self.assertIsNotNone(datetime.fromisoformat(diagnostic["observed_at"]).tzinfo)
+        self.assertEqual(diagnostic["pid"], os.getpid())
+        self.assertTrue(diagnostic["frames"])
+        self.assertTrue(all(f["module"] == "document_changes.py" for f in diagnostic["frames"]))
+        serialized = json.dumps(diagnostic)
+        for private in ("customer", "private SQL", str(self.watch), "source.md"):
+            self.assertNotIn(private, serialized)
+        self.assertNotIn("event_id", diagnostic)
+        self.assertFalse(document_changes_status(self.conn)["coverage"]["is_complete"])
+        self.assertGreater(self.conn.execute("SELECT COUNT(*) FROM file_watch_coverage_gaps WHERE reason_code='event_consumer_exception' AND affects_attribution=1").fetchone()[0], 0)
+
+    def test_consumer_exception_diagnostic_failure_keeps_original_fail_closed(self):
+        def failing_sink(_payload):
+            raise RuntimeError("private sink error")
+        worker, controlled = self._start_controlled_worker(diagnostic_sink=failing_sink)
+        try:
+            with mock.patch.object(document_changes_module, "_definitely_ignored_event", side_effect=ValueError("private path")):
+                controlled.emit({"path": str(self.watch / "private.md"), "event_id": "700",
+                                 "observed_at": datetime.now(timezone.utc).isoformat(), "flags": ["item_modified"]})
+                self.assertTrue(self._wait_until(lambda: controlled.terminated))
+        finally:
+            self._stop_worker(worker)
+        self.assertFalse(document_changes_status(self.conn)["coverage"]["is_complete"])
+        self.assertGreater(self.conn.execute("SELECT COUNT(*) FROM file_watch_coverage_gaps WHERE reason_code='event_consumer_exception' AND affects_attribution=1").fetchone()[0], 0)
+
+    def test_consumer_exception_evidence_rejects_arbitrary_class_and_code(self):
+        private_type = type("PrivateCustomerException", (Exception,), {})
+        error = private_type("private content")
+        error.sqlite_errorcode = sqlite3.SQLITE_BUSY
+        evidence = document_changes_module._consumer_exception_evidence(error)
+        self.assertEqual(evidence, {"exception_type": "other", "sqlite_code": "not_provided", "frames": []})
+        failure = sqlite3.OperationalError("private content")
+        failure.sqlite_errorcode = "private code"
+        self.assertEqual(document_changes_module._consumer_exception_evidence(failure)["sqlite_code"], "not_provided")
 
     def test_fatal_transition_diagnostic_failure_does_not_weaken_fail_closed(self):
         def failing_sink(_payload: dict) -> None:
@@ -9693,7 +9752,7 @@ with mock.patch.object(module, "process_document_event", side_effect=hold_final)
         """
 
         (self.watch / "tracked.md").write_text("before", encoding="utf-8")
-        holder: dict[str, object] = {}
+        holder: dict[str, object] = {"emitted_events": 0}
         stop_churn = threading.Event()
 
         def factory(command, **kwargs):
@@ -9709,6 +9768,7 @@ with mock.patch.object(module, "process_document_event", side_effect=hold_final)
                         "observed_at": datetime.now(timezone.utc).isoformat(),
                         "flags": ["item_renamed", "item_is_dir"],
                     })
+                    holder["emitted_events"] = event_id - 899
                     event_id += 1
 
             thread = threading.Thread(target=churn, name="benign-churn", daemon=True)
@@ -9748,7 +9808,23 @@ with mock.patch.object(module, "process_document_event", side_effect=hold_final)
             # the gaps it just re-covered -- coverage is complete at this exact
             # point. Ordinary directory churn is counted separately and does
             # not invalidate attribution coverage.
-            self.assertTrue(document_changes_status(self.conn)["coverage"]["is_complete"])
+            status = document_changes_status(self.conn)
+            coverage = status["coverage"]
+            # Preserve the first observation before tearDown removes this
+            # synthetic database. Do not log paths, root labels or content.
+            diagnostic = {
+                "coverage": {key: coverage.get(key) for key in (
+                    "is_complete", "enabled", "baseline_status", "root_count",
+                    "coverage_status", "pending_event_count", "resume_pending",
+                    "event_gap_count", "benign_event_count",
+                )},
+                "limitations": status["limitations"],
+                "baseline_statuses": sorted(statuses),
+                "completed_at_present": completed_at is not None,
+                "emitted_events": holder["emitted_events"],
+                "churn_thread_alive": churn_thread.is_alive(),
+            }
+            self.assertTrue(coverage["is_complete"], json.dumps(diagnostic, sort_keys=True))
             controlled.emit({
                 "path": str(self.watch / "folder-after-baseline"),
                 "event_id": "990",

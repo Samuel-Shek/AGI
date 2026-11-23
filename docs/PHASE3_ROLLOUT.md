@@ -178,7 +178,7 @@ loader fail-closed，不得替代目标 Mac 的 SIP 现场证据。
 
 - `core`；
 - `Swift tests (Xcode 15.4)`；
-- `Swift tests (Xcode 16.4)`；
+- `Swift tests (Xcode 16.2)`；
 - `app-build`。
 
 Swift job 会把源码声明与版本化 baseline manifest 精确比对，再用 Swift/XCTest

@@ -25,6 +25,7 @@ import sys
 
 from activity_mvp.source_governance import personal_sources as personal_scope
 from .feedback.store import atomic, packed
+from . import closure_requirements as goals
 
 
 def metadata_paths(value):
@@ -40,7 +41,7 @@ def metadata_paths(value):
     scope = value.get("scope")
     if isinstance(scope, str) and Path(scope).is_absolute(): paths.append(scope)
     elif isinstance(scope, dict): paths.extend(metadata_paths(scope))
-    for key in ("evidence", "acceptance", "authority", "conditions", "independent_artifact", "wording_artifact", "final_response"):
+    for key in ("evidence", "acceptance", "authority", "conditions", "independent_artifact", "wording_artifact", "final_response", "goal_review", "outcomes", "requirements", "items", "verification", "freshness", "freshness_evidence"):
         if value.get(key): paths.extend(metadata_paths(value[key]))
     return paths
 
@@ -314,7 +315,7 @@ def artifact_file(path, root):
     if target.name.casefold() in PROTECTED_ARTIFACT_NAMES or parts & PROTECTED_ARTIFACT_PARTS:
         raise ValueError("artifact_operational_target")
     protected = (Path.home() / "AI/shared-skills", Path.home() / "AI/source-governance", Path.home() / "bin", Path.home() / ".local/bin",
-                 Path.home() / "Library/Application Support/Personal AI Monitor/core",
+                 Path.home() / "Library/Application Support/PSI/core",
                  Path.home() / "Code/active/artificial-general-intelligence/core",
                  Path.home() / "Code/active/artificial-general-intelligence/apps")
     if any(target == base or base in target.parents for base in protected):
@@ -477,7 +478,7 @@ def final_wording(text, facts, remaining):
     return reasons
 
 
-def read_delivery_file(path, root, limit=128 * 1024):
+def read_delivery_file(path, root, limit=128 * 1024, *, owner_private=False, owner_controlled=False):
     """No-follow path walk, bounded read and single-file identity verification."""
     path, root = Path(path), Path(root)
     relative = path.relative_to(root)
@@ -485,13 +486,21 @@ def read_delivery_file(path, root, limit=128 * 1024):
         raise ValueError("final_response_path_invalid")
     descriptors = []
     try:
-        fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW); descriptors.append(fd)
+        # Traverse known directory names without requiring directory listings.
+        # Match the existing fixed-reader contract; every component still
+        # refuses aliases and the actual file still requires read permission.
+        directory_flags = getattr(os, "O_SEARCH", 0x40000000 if sys.platform == "darwin" else os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW
+        fd = os.open("/", directory_flags); descriptors.append(fd)
         for part in [*root.parts[1:], *relative.parts[:-1]]:
-            fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd); descriptors.append(fd)
+            fd = os.open(part, directory_flags, dir_fd=fd); descriptors.append(fd)
         fd = os.open(relative.parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd); descriptors.append(fd)
         before = os.fstat(fd)
         if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size > limit:
             raise ValueError("final_response_file_invalid")
+        if owner_private and (before.st_uid != os.getuid() or before.st_mode & 0o077):
+            raise ValueError("native_completion_source_not_private")
+        if owner_controlled and (before.st_uid != os.getuid() or before.st_mode & 0o022):
+            raise ValueError("native_completion_source_not_owned")
         data = b""
         while len(data) <= limit:
             block = os.read(fd, min(65536, limit + 1 - len(data)))
@@ -583,6 +592,376 @@ def safe_authority(item):
     return authority_readiness(json.loads(item["authority"]), item["target_root"])[0] == "pending"
 
 
+CLAUDE_PROJECTS = Path.home() / ".claude/projects"
+CODEX_SESSIONS = Path.home() / ".codex/sessions"
+
+
+def codex_native_page_context(row, turn):
+    """Recognize an inert native Page snapshot, never human authorization."""
+    payload = row.get("payload", {})
+    metadata = payload.get("internal_chat_message_metadata_passthrough", {})
+    blocks = payload.get("content")
+    if (row.get("type") != "response_item"
+            or set(payload) != {"type", "id", "role", "content", "internal_chat_message_metadata_passthrough"}
+            or payload.get("type") != "message"
+            or payload.get("role") != "user" or not isinstance(metadata, dict)
+            or set(metadata) not in ({"turn_id", "create_time", "content_item_kinds"},
+                                    {"turn_id", "create_time", "content_item_kinds", "content_item_metadata"})
+            or metadata.get("turn_id") != turn
+            or metadata.get("content_item_kinds") != ["additional_content.codex_apps_open_page"]
+            or not isinstance(blocks, list) or len(blocks) != 1
+            or not isinstance(blocks[0], dict) or set(blocks[0]) != {"type", "text"}
+            or blocks[0]["type"] != "input_text"):
+        return False
+    if "content_item_metadata" in metadata:
+        provenance = metadata["content_item_metadata"]
+        if (provenance != [{"provenance": {"type": "harness", "hook": False}}]
+                or provenance[0]["provenance"]["hook"] is not False):
+            return False
+    identifier, created = payload["id"], metadata["create_time"]
+    uuid_pattern = r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"
+    if (not isinstance(identifier, str) or re.fullmatch("msg_" + uuid_pattern, identifier) is None
+            or type(created) not in (int, float) or not 0 <= created < float("inf")):
+        return False
+    text = blocks[0]["text"]
+    prefix, suffix = "<external_codex_apps_open_page>", "</external_codex_apps_open_page>"
+    if (not isinstance(text, str) or len(text) > 512
+            or not text.startswith(prefix) or not text.endswith(suffix)):
+        return False
+    try:
+        value = json.loads(text[len(prefix):-len(suffix)], object_pairs_hook=_manual_json_pairs)
+    except ValueError:
+        return False
+    if not isinstance(value, dict) or set(value) != {"page_id"}:
+        return False
+    page = value["page_id"]
+    return page is None or (isinstance(page, str)
+        and re.fullmatch(uuid_pattern, page) is not None)
+
+
+def codex_native_agents_instructions(row, turn):
+    """Recognize a host rule refresh, never human consent or completion proof."""
+    payload = row.get("payload", {})
+    metadata = payload.get("internal_chat_message_metadata_passthrough", {})
+    blocks = payload.get("content")
+    if (row.get("type") != "response_item"
+            or set(payload) != {"type", "id", "role", "content", "internal_chat_message_metadata_passthrough"}
+            or payload.get("type") != "message" or payload.get("role") != "user"
+            or not isinstance(metadata, dict)
+            or set(metadata) != {"turn_id", "create_time", "content_item_kinds", "content_item_metadata"}
+            or metadata.get("turn_id") != turn
+            or metadata.get("content_item_kinds") != ["agents_md.instructions"]
+            or metadata.get("content_item_metadata") != [{"provenance": {"type": "agents_md"}}]
+            or not isinstance(blocks, list) or len(blocks) != 1
+            or not isinstance(blocks[0], dict) or set(blocks[0]) != {"type", "text"}
+            or blocks[0]["type"] != "input_text"):
+        return False
+    identifier, created = payload["id"], metadata["create_time"]
+    uuid_pattern = r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"
+    if (not isinstance(identifier, str) or re.fullmatch("msg_" + uuid_pattern, identifier) is None
+            or type(created) not in (int, float) or not 0 <= created < float("inf")):
+        return False
+    text = blocks[0]["text"]
+    prefix = "# AGENTS.md instructions\n\n<INSTRUCTIONS>\n"
+    suffix = "\n</INSTRUCTIONS>"
+    return (isinstance(text, str) and len(text) <= 128 * 1024
+        and text.startswith(prefix) and text.endswith(suffix)
+        and text.count("<INSTRUCTIONS>") == text.count("</INSTRUCTIONS>") == 1
+        and bool(text[len(prefix):-len(suffix)].strip()))
+
+
+def codex_native_environment_context(row, turn):
+    """Recognize the observed pre-user host environment shape, never consent."""
+    payload = row.get("payload", {})
+    metadata = payload.get("internal_chat_message_metadata_passthrough", {})
+    blocks = payload.get("content")
+    if (row.get("type") != "response_item"
+            or set(payload) != {"type", "id", "role", "content", "internal_chat_message_metadata_passthrough"}
+            or payload.get("type") != "message" or payload.get("role") != "user"
+            or not isinstance(metadata, dict)
+            or set(metadata) != {"turn_id", "create_time", "content_item_kinds", "content_item_metadata"}
+            or metadata.get("turn_id") != turn
+            or metadata.get("content_item_kinds") != ["environments.environment_context"]
+            or metadata.get("content_item_metadata") != [{"provenance": {"type": "harness", "hook": False}}]
+            or not isinstance(blocks, list) or len(blocks) != 1
+            or not isinstance(blocks[0], dict) or set(blocks[0]) != {"type", "text"}
+            or blocks[0]["type"] != "input_text"):
+        return False
+    if metadata["content_item_metadata"][0]["provenance"]["hook"] is not False:
+        return False
+    identifier, created = payload["id"], metadata["create_time"]
+    uuid_pattern = r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"
+    if (not isinstance(identifier, str) or re.fullmatch("msg_" + uuid_pattern, identifier) is None
+            or type(created) not in (int, float) or not 0 <= created < float("inf")):
+        return False
+    text = blocks[0]["text"]
+    # Only the two observed schemas: one root, or three roots and one subagent.
+    # These data envelopes never grant permissions or identify the real user.
+    prefix = (r'<environment_context>\n  <current_date>[0-9]{4}-[0-9]{2}-[0-9]{2}</current_date>\n'
+        r'  <timezone>[A-Za-z0-9_+/-]{1,100}</timezone>\n  <filesystem><workspace_roots>')
+    root = r'<root>/[^<>&\x00-\x1f]{1,2048}</root>'
+    filesystem_end = (r'</workspace_roots><permission_profile type="disabled">'
+        r'<file_system type="unrestricted" /></permission_profile></filesystem>\n')
+    subagent = r'  <subagents>\n    <agent name="/root/[a-z0-9_]{1,64}" />\n  </subagents>\n'
+    patterns = (prefix + root + filesystem_end + r'</environment_context>',
+        prefix + '(?:' + root + '){3}' + filesystem_end + subagent + r'</environment_context>')
+    return (isinstance(text, str) and len(text) <= 8192
+        and any(re.fullmatch(pattern, text) is not None for pattern in patterns))
+
+
+def codex_completed_external_receipt(task, item, proof):
+    """Verify the observed desktop UserMessage/CommandExecution native format.
+
+    CommandExecution is the native call-and-result envelope, with its own turn
+    identity and exit status. Compaction's replacement history, assistant text
+    and caller-supplied transcripts cannot supply either authorization or proof.
+    This authenticates a historical receipt only; _accept keeps current waits.
+    """
+    uuid_pattern = r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"
+    if (item["owner"] != "codex:" + task["session"]
+            or not re.fullmatch(uuid_pattern, task["session"])
+            or not re.fullmatch(uuid_pattern, task["turn"])):
+        raise ValueError("completed_external_native_identity_unsupported")
+    matches = list(CODEX_SESSIONS.glob("*/*/*/rollout-*-" + task["session"] + ".jsonl"))
+    if len(matches) != 1:
+        raise ValueError("completed_external_native_source_ambiguous")
+    # Codex normally writes 0644 beneath its private session directory. Preserve
+    # that format but require same-owner, no external writers and no file links.
+    raw = read_delivery_file(matches[0], CODEX_SESSIONS, 32 * 1024 * 1024, owner_controlled=True)
+    if not raw.endswith(b"\n"):
+        raise ValueError("completed_external_native_source_incomplete")
+    records = []
+    for line in raw.splitlines():
+        if len(line) > 2 * 1024 * 1024:
+            raise ValueError("completed_external_native_record_oversized")
+        row = json.loads(line, object_pairs_hook=_manual_json_pairs)
+        if not isinstance(row, dict) or not isinstance(row.get("payload"), dict):
+            raise ValueError("completed_external_native_record_invalid")
+        records.append(row)
+    if (not records or records[0].get("type") != "session_meta"
+            or records[0]["payload"].get("id") != task["session"]
+            or records[0]["payload"].get("session_id", task["session"]) != task["session"]
+            or records[0]["payload"].get("source") not in ("vscode", "cli")
+            or sum(row.get("type") == "session_meta" for row in records) != 1):
+        raise ValueError("completed_external_native_session_mismatch")
+    starts, users, results = [], [], []
+    for index, row in enumerate(records):
+        if row.get("type") != "event_msg": continue
+        event = row["payload"]
+        if event.get("type") == "task_started" and event.get("turn_id") == task["turn"]:
+            starts.append(index)
+        native = event.get("item", {})
+        if event.get("type") != "item_completed" or not isinstance(native, dict): continue
+        if native.get("id") == proof["user_message_id"]: users.append(index)
+        if native.get("id") == proof["tool_use_id"]: results.append(index)
+    if len(starts) != 1 or len(users) != 1 or len(results) != 1:
+        raise ValueError("completed_external_native_tool_or_user_ambiguous")
+    start, user_index, result_index = starts[0], users[0], results[0]
+    if not start < user_index < result_index:
+        raise ValueError("completed_external_native_lineage_invalid")
+    started = records[start]["payload"]
+    attribution = started.get("turn_attribution", {})
+    if (started.get("root_turn_id") != task["turn"] or not isinstance(attribution, dict)
+            or attribution.get("turn_id") != task["turn"]
+            or attribution.get("root_turn_id") != task["turn"]
+            or attribution.get("parent_turn_id", True) is not None
+            or attribution.get("initiating_agent_path", True) is not None):
+        raise ValueError("completed_external_native_lineage_invalid")
+    user, result = records[user_index], records[result_index]
+    for row in (user, result):
+        if row["payload"].get("thread_id") != task["session"] or row["payload"].get("turn_id") != task["turn"]:
+            raise ValueError("completed_external_native_lineage_invalid")
+    native_user = user["payload"]["item"]
+    prior = records[user_index - 1]
+    visible = prior["payload"]
+    metadata = visible.get("internal_chat_message_metadata_passthrough", {})
+    content, blocks = native_user.get("content"), visible.get("content")
+    if (native_user.get("type") != "UserMessage"
+            or not isinstance(native_user.get("client_id"), str) or not native_user["client_id"]
+            or prior.get("type") != "response_item" or visible.get("type") != "message" or visible.get("role") != "user"
+            or not isinstance(metadata, dict) or metadata.get("turn_id") != task["turn"]
+            or metadata.get("content_item_kinds") != ["user.text"]
+            or not isinstance(content, list) or len(content) != 1 or not isinstance(content[0], dict)
+            or content[0].get("type") not in {"text", "Text"}
+            or not isinstance(blocks, list) or len(blocks) != 1 or not isinstance(blocks[0], dict)
+            or blocks[0].get("type") != "input_text" or not isinstance(content[0].get("text"), str)
+            or not content[0]["text"].strip() or blocks[0].get("text") != content[0]["text"]
+            or content[0]["text"].lstrip().startswith(("<hook_prompt", "Stop hook feedback:", "# AGENTS.md instructions", "<environment_context>"))):
+        raise ValueError("completed_external_native_user_mismatch")
+    page_context_seen = False
+    environment_context_seen = False
+    agents_instructions_seen = False
+    for index in range(start + 1, result_index + 1):
+        row = records[index]; event = row["payload"]
+        if row.get("type") == "turn_context" and event.get("turn_id") != task["turn"]:
+            raise ValueError("completed_external_native_turn_changed")
+        if row.get("type") == "response_item" and event.get("role") == "user" and index != user_index - 1:
+            # Page/environment data precedes the genuine user pair; the observed
+            # host rule refresh follows it. None can supply consent or a readback.
+            # Rule content still applies; this only distinguishes native input kinds.
+            if index < user_index - 1 and not page_context_seen and codex_native_page_context(row, task["turn"]):
+                page_context_seen = True
+            elif (index < user_index - 1 and not environment_context_seen
+                    and codex_native_environment_context(row, task["turn"])):
+                environment_context_seen = True
+            elif (user_index < index < result_index and not agents_instructions_seen
+                    and codex_native_agents_instructions(row, task["turn"])):
+                agents_instructions_seen = True
+            else:
+                raise ValueError("completed_external_native_turn_changed")
+        if row.get("type") != "event_msg": continue
+        if event.get("type") in {"task_started", "task_complete", "turn_aborted"}:
+            raise ValueError("completed_external_native_turn_changed")
+        native = event.get("item", {})
+        if (event.get("type") == "user_message"
+                or isinstance(native, dict) and native.get("type") == "UserMessage" and index != user_index):
+            raise ValueError("completed_external_native_turn_changed")
+        if event.get("type") == "item_completed" and (event.get("thread_id") != task["session"] or event.get("turn_id") != task["turn"]):
+            raise ValueError("completed_external_native_lineage_invalid")
+    receipt = result["payload"]["item"]
+    output, command = receipt.get("aggregated_output"), receipt.get("command")
+    if (receipt.get("type") != "CommandExecution" or receipt.get("status") != "completed"
+            or receipt.get("source") != "unified_exec_startup"
+            or type(receipt.get("exit_code")) is not int or receipt["exit_code"] != 0
+            or not isinstance(command, list) or not command or any(not isinstance(x, str) or not x for x in command)
+            or not isinstance(receipt.get("cwd"), str) or not receipt["cwd"]
+            or not isinstance(output, str) or not output.strip()
+            or hashlib.sha256(output.encode()).hexdigest() != proof["tool_result_sha256"]):
+        raise ValueError("completed_external_native_readback_invalid")
+    return {"kind": "codex_native_command_readback_v1", "platform": task["platform"],
+            "session": task["session"], "turn": task["turn"], **proof,
+            "tool_input_sha256": digest({"command": command, "cwd": receipt["cwd"]}),
+            "user_record_sha256": digest(user), "result_record_sha256": digest(result)}
+
+
+def completed_external_receipt(task, item, proof):
+    """Authenticate historical native evidence, not a new permission or choice.
+
+    The reviewer still checks the meaning/scope of the user's words and the
+    actual readback against acceptance_rule, as for ordinary acceptance. Never
+    persist those words, tool arguments or output. Unsupported native formats
+    fail closed rather than accepting a caller-provided transcript or flag.
+    """
+    fields = {"user_message_id", "tool_use_id", "tool_result_sha256", "authorization_review", "readback_review"}
+    if not isinstance(proof, dict) or set(proof) != fields:
+        raise ValueError("completed_external_proof_required")
+    authority = json.loads(item["authority"])
+    if (authority.get("external") is not True or authority.get("reversible") is not True
+            or any(authority.get(k) is not False for k in ("cost", "new_permission", "personal_choice"))):
+        raise ValueError("completed_external_risk_still_pending")
+    authority_scope(authority, item["target_root"])
+    for key in ("user_message_id", "tool_use_id", "tool_result_sha256"):
+        bounded_text(proof[key], key, 200)
+    for key in ("authorization_review", "readback_review"):
+        bounded_text(proof[key], key, 2000)
+    if task["platform"] == "codex":
+        return codex_completed_external_receipt(task, item, proof)
+    if (task["platform"] != "claude" or item["owner"] != "claude:" + task["session"]
+            or not re.fullmatch(r"[0-9a-f-]{36}", task["session"])
+            or not re.fullmatch(r"[0-9a-f]{64}", task["turn"])):
+        raise ValueError("completed_external_native_identity_unsupported")
+    matches = list(CLAUDE_PROJECTS.glob("*/" + task["session"] + ".jsonl"))
+    if len(matches) != 1:
+        raise ValueError("completed_external_native_source_ambiguous")
+    raw = read_delivery_file(matches[0], CLAUDE_PROJECTS, 16 * 1024 * 1024, owner_private=True)
+    records = {}
+    for line in raw.splitlines():
+        if len(line) > 2 * 1024 * 1024:
+            raise ValueError("completed_external_native_record_oversized")
+        row = json.loads(line, object_pairs_hook=_manual_json_pairs)
+        if not isinstance(row, dict) or not isinstance(row.get("message", {}), dict):
+            raise ValueError("completed_external_native_record_invalid")
+        identifier = row.get("uuid")
+        if identifier:
+            if identifier in records: raise ValueError("completed_external_native_duplicate")
+            records[identifier] = row
+    # Legacy Claude turn keys hash prompt text. Repeated identical prompts are
+    # different human turns; without a trusted UUID binding we must not guess.
+    matching_users = [row for row in records.values()
+                      if row.get("type") == "user" and row.get("message", {}).get("role") == "user"
+                      and row.get("userType") == "external" and row.get("isSidechain") is False
+                      and not row.get("isMeta") and row.get("sessionId") == task["session"]
+                      and isinstance(row.get("message", {}).get("content"), str)
+                      and hashlib.sha256(row["message"]["content"].encode()).hexdigest() == task["turn"]]
+    if len(matching_users) > 1:
+        raise ValueError("completed_external_native_turn_ambiguous")
+    user = records.get(proof["user_message_id"], {})
+    content = user.get("message", {}).get("content")
+    if (user.get("type") != "user" or user.get("message", {}).get("role") != "user"
+            or user.get("userType") != "external" or user.get("isSidechain") is not False
+            or user.get("isMeta") or not isinstance(content, str)
+            or user.get("sessionId") != task["session"]
+            or hashlib.sha256(content.encode()).hexdigest() != task["turn"]):
+        raise ValueError("completed_external_native_user_mismatch")
+    calls, results = [], []
+    for row in records.values():
+        blocks = row.get("message", {}).get("content")
+        if not isinstance(blocks, list): continue
+        for block in blocks:
+            if not isinstance(block, dict): continue
+            if block.get("type") == "tool_use" and block.get("id") == proof["tool_use_id"]:
+                calls.append((row, block))
+            if block.get("type") == "tool_result" and block.get("tool_use_id") == proof["tool_use_id"]:
+                results.append((row, block))
+    if len(calls) != 1 or len(results) != 1:
+        raise ValueError("completed_external_native_tool_missing")
+    call, invocation = calls[0]; result, output = results[0]
+    text = output.get("content")
+    tool_metadata = result.get("toolUseResult", {})
+    if not isinstance(tool_metadata, dict):
+        raise ValueError("completed_external_native_readback_invalid")
+    if (call.get("type") != "assistant" or call.get("message", {}).get("role") != "assistant"
+            or result.get("type") != "user" or result.get("message", {}).get("role") != "user"
+            or output.get("is_error") is not False or not isinstance(text, str) or not text.strip()
+            or tool_metadata.get("interrupted") is True
+            or hashlib.sha256(text.encode()).hexdigest() != proof["tool_result_sha256"]):
+        raise ValueError("completed_external_native_readback_invalid")
+    # Follow the actual parent chain. A later human turn, side agent, missing
+    # ancestor, replayed result or unrelated branch cannot borrow this consent.
+    row = result; seen = set(); reached_call = False
+    while row.get("uuid") != user["uuid"]:
+        identifier = row.get("uuid")
+        if (not identifier or identifier in seen or row.get("sessionId") != task["session"]
+                or row.get("isSidechain") is not False or row.get("isMeta")):
+            raise ValueError("completed_external_native_lineage_invalid")
+        seen.add(identifier)
+        if identifier == call["uuid"]: reached_call = True
+        if row.get("type") == "user":
+            blocks = row.get("message", {}).get("content")
+            # A human message can also use native text/image blocks. Only a
+            # nonempty, pure tool-result envelope may cross the original turn.
+            if (row.get("message", {}).get("role") != "user"
+                    or not isinstance(blocks, list) or not blocks
+                    or any(not isinstance(block, dict) or block.get("type") != "tool_result"
+                           or not isinstance(block.get("tool_use_id"), str)
+                           or not block["tool_use_id"] for block in blocks)):
+                raise ValueError("completed_external_native_turn_changed")
+            parent = records.get(row.get("parentUuid"), {})
+            parent_blocks = parent.get("message", {}).get("content")
+            if (parent.get("type") != "assistant" or parent.get("message", {}).get("role") != "assistant"
+                    or not isinstance(parent_blocks, list)):
+                raise ValueError("completed_external_native_lineage_invalid")
+            call_ids = [block.get("id") for block in parent_blocks
+                        if isinstance(block, dict) and block.get("type") == "tool_use"]
+            result_ids = [block["tool_use_id"] for block in blocks]
+            if (len(set(result_ids)) != len(result_ids)
+                    or any(call_ids.count(identifier) != 1 for identifier in result_ids)):
+                raise ValueError("completed_external_native_lineage_invalid")
+        elif row.get("type") == "attachment":
+            # Native attachment metadata is not a human turn; it cannot borrow
+            # or invalidate consent, but must not fail closed the walk.
+            pass
+        elif row.get("type") != "assistant" or row.get("message", {}).get("role") != "assistant":
+            raise ValueError("completed_external_native_lineage_invalid")
+        row = records.get(row.get("parentUuid"), {})
+    if not reached_call:
+        raise ValueError("completed_external_native_lineage_invalid")
+    return {"kind": "claude_native_tool_readback_v1", "platform": task["platform"],
+            "session": task["session"], "turn": task["turn"], **proof,
+            "tool_input_sha256": digest(invocation.get("input")),
+            "user_record_sha256": digest(user), "result_record_sha256": digest(result)}
+
+
 class Store:
     def __init__(self, database, readonly=False):
         self.database = Path(database).resolve()
@@ -622,6 +1001,12 @@ class Store:
               CREATE TABLE IF NOT EXISTS closure_task_modes(
                 task_id TEXT PRIMARY KEY REFERENCES closure_tasks(id), mode TEXT NOT NULL,
                 artifact_paths TEXT NOT NULL, upgraded_reason TEXT, created REAL NOT NULL, updated REAL NOT NULL);
+              CREATE TABLE IF NOT EXISTS closure_request_sources(
+                task_id TEXT PRIMARY KEY, platform TEXT NOT NULL, session TEXT NOT NULL,
+                turn TEXT NOT NULL, prompt_hash TEXT NOT NULL, policy INTEGER NOT NULL, at REAL NOT NULL);
+              CREATE TABLE IF NOT EXISTS closure_requirement_contracts(
+                task_id TEXT PRIMARY KEY REFERENCES closure_tasks(id), revision INTEGER NOT NULL,
+                sha256 TEXT NOT NULL, value TEXT NOT NULL, updated REAL NOT NULL);
               CREATE TABLE IF NOT EXISTS closure_native_effects(
                 task_id TEXT NOT NULL, path TEXT NOT NULL, operational INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY(task_id,path));
@@ -857,6 +1242,10 @@ class Store:
         reasons, runnable, unknown = [], False, False
         if not status["audit_valid"] or task["complex"] and not status["independent"]:
             unknown = True; reasons.append("有效独立收尾审查尚未齐全")
+        for requirement in status.get("unmet_requirements", []):
+            reasons.append({"requirement_id": requirement["id"], "reason": requirement["reason"]})
+            if not requirement.get("issue_id"):
+                runnable = True  # Continue source/result inspection, never grant new action authority.
         native = self.native_root(task)
         for item in status["remaining"]:
             reason = None
@@ -877,6 +1266,22 @@ class Store:
             if reason: reasons.append({"issue_id": item["id"], "reason": reason})
         return {"decision": "continue_now" if runnable else "unknown" if unknown else "waiting", "reasons": reasons}
 
+    def observe_closure_request(self, identifier, platform, session, turn, prompt_hash):
+        if identifier != digest([platform, session, turn])[:32] or not re.fullmatch(r"[0-9a-f]{64}", prompt_hash):
+            raise ValueError("native_requirement_source_invalid")
+        prior = goals.request(self, identifier)
+        if prior and (prior["platform"], prior["session"], prior["turn"], prior["prompt_hash"]) != (platform, session, turn, prompt_hash):
+            raise ValueError("native_requirement_source_changed")
+        self.conn.execute("INSERT OR IGNORE INTO closure_request_sources VALUES(?,?,?,?,?,?,?)",
+                          (identifier, platform, session, turn, prompt_hash, 2 if platform == "codex" else 1, time.time()))
+
+    def requirements(self, payload):
+        task = self.conn.execute("SELECT * FROM closure_tasks WHERE id=?", (payload["task_id"],)).fetchone()
+        if not task or not self.native_root(task): raise ValueError("current_task_requirements_required")
+        with self.transaction():
+            saved = goals.save(self, task, payload["requirements"])
+        return {"task_id": task["id"], "goal_contract_sha256": saved["sha256"], "revision": saved["revision"]}
+
     def begin(self, payload):
         platform = payload["platform"]
         if platform not in {"codex", "claude", "hermes", "workbuddy", "openclaw"}:
@@ -892,6 +1297,14 @@ class Store:
         if mode is not None and mode not in {"light", "full"}: raise ValueError("closure_mode_invalid")
         if "artifact_paths" in payload and mode is None: raise ValueError("closure_mode_required")
         paths = artifact_declaration(payload.get("artifact_paths", []), root) if mode == "light" else []
+        native_source = goals.request(self, identifier)
+        existing = self.conn.execute("SELECT 1 FROM closure_tasks WHERE id=?", (identifier,)).fetchone()
+        required_contract = platform == "codex" and mode != "light" and (not existing or goals.requires_contract(self, identifier))
+        if (required_contract and (not native_source or payload.get("requirements") is None and not goals.contract(self, identifier))):
+            self.event("full_requirements_missing", {}, task=identifier)
+            raise ValueError("source_bound_requirements_required")
+        if mode == "light" and payload.get("requirements") is not None:
+            raise ValueError("light_requirements_not_applicable")
         with self.transaction():
             old = self.conn.execute("SELECT * FROM closure_tasks WHERE id=?", (identifier,)).fetchone()
             if old and old["requirements_hash"] != requirement:
@@ -899,6 +1312,7 @@ class Store:
             self.conn.execute("INSERT OR IGNORE INTO closure_tasks VALUES(?,?,?,?,?,?,?,?,?,?)",
                               (identifier, platform, session, turn, objective, str(root),
                                int(payload.get("complex") is True), requirement, time.time(), time.time()))
+            if not old and platform == "codex": self.event("codex_registered_v2", {}, task=identifier)
             previous = self.conn.execute("SELECT * FROM closure_task_modes WHERE task_id=?", (identifier,)).fetchone()
             # An existing legacy registration cannot be relabeled as content.
             if old and not previous and mode == "light": raise ValueError("legacy_task_mode_immutable")
@@ -908,8 +1322,13 @@ class Store:
                 self.conn.execute("INSERT INTO closure_task_modes VALUES(?,?,?,?,?,?)",
                                   (identifier, mode, json.dumps(paths), None, time.time(), time.time()))
             elif mode == "full": self._upgrade_closure(identifier, "explicit_full")
+            if payload.get("requirements") is not None:
+                task = self.conn.execute("SELECT * FROM closure_tasks WHERE id=?", (identifier,)).fetchone()
+                goals.save(self, task, payload["requirements"])
             self.closure_applicability(identifier)
-        return {"task_id": identifier, "requirements_hash": requirement}
+        saved = goals.contract(self, identifier)
+        return {"task_id": identifier, "requirements_hash": requirement,
+                **({"goal_contract_sha256": saved["sha256"]} if saved else {})}
 
     def _upgrade_closure(self, identifier, reason):
         """Called under the caller's transaction; never resets identity/guards."""
@@ -987,6 +1406,14 @@ class Store:
                 raise ValueError("scope_correction_issue_missing")
             if old:
                 old_authority = json.loads(old["authority"])
+                accepted = json.loads(old["acceptance"] or "{}")
+                if (old["state"] == "resolved" and accepted.get("completed_external")
+                        and old_authority == authority and rows == accepted.get("evidence")
+                        and current(accepted.get("evidence", []))):
+                    self.event("duplicate_linked", {"source_task": task["id"]}, issue=old["id"], task=task["id"])
+                    return {"issue": self.get(old["id"]), "reused": True}
+                if payload.get("completion") is not None:
+                    raise ValueError("completed_external_existing_issue_query_then_accept")
                 if payload.get("scope_correction") is not None:
                     correction = payload["scope_correction"]
                     expected_context = {"platform": task["platform"], "session": task["session"], "turn": task["turn"], "task_id": task["id"]}
@@ -1011,9 +1438,11 @@ class Store:
                     return {"issue": self.get(old["id"]), "reused": True}
                 restricted = (not safe and old["state"] not in {"canceled", "dismissed"})
                 if restricted:
-                    state = "decision" if old["state"] == "decision" else initial_state
+                    blocked = self.declared_block(dict(old))
+                    state = "blocked" if blocked else ("decision" if old["state"] == "decision" else initial_state)
                     self.conn.execute("UPDATE closure_issues SET state=?,authority=?,acceptance=NULL,revision=revision+1,recovery=?,updated=? WHERE id=?",
-                                      (state, json.dumps(authority), authority_recovery, time.time(), old["id"]))
+                                      (state, json.dumps(authority), old["recovery"] if blocked else authority_recovery,
+                                       time.time(), old["id"]))
                     self.event("authority_restricted", {"authority": authority, "state": state}, issue=old["id"], task=task["id"], notify=old["state"] != state)
                 elif old["state"] == "resolved":
                     accepted = json.loads(old["acceptance"] or "{}")
@@ -1034,7 +1463,12 @@ class Store:
             if authority_recovery:
                 self.conn.execute("UPDATE closure_issues SET recovery=? WHERE id=?", (authority_recovery, identifier))
             self.event("registered", {"category": category, "evidence": rows, "state": initial_state}, issue=identifier,
-                       task=task["id"], notify=not safe)
+                       task=task["id"], notify=not safe and payload.get("completion") is None)
+            if payload.get("completion") is not None:
+                completion = payload["completion"]
+                if not isinstance(completion, dict) or not completion.get("completed_external"):
+                    raise ValueError("completed_external_proof_required")
+                self._accept({**completion, "issue_id": identifier, "revision": 1, "evidence": rows})
         return {"issue": self.get(identifier), "reused": False}
 
     def transition(self, identifier, state, reason, expected_revision=None, recovery=None):
@@ -1068,7 +1502,7 @@ class Store:
     def decide(self, payload):
         """Native explicit choice; no timeout/default and no new monetary action.
 
-        Like existing AGI choice APIs, calling this action requires the real
+        Like existing PSI choice APIs, calling this action requires the real
         owner's current click/reply. A model must never manufacture that event.
         The token binds displayed terms; it is not itself proof of human consent.
         """
@@ -1097,23 +1531,49 @@ class Store:
 
     def accept(self, payload):
         with self.transaction():
-            item = self.get(payload["issue_id"])
-            if item["revision"] != payload.get("revision"): raise ValueError("revision_changed")
-            if item["state"] in TERMINAL or item["state"] == "decision": raise ValueError("issue_not_accepting")
-            root = Path(item["target_root"])
-            final = evidence(payload["evidence"], root)
-            # Repairs legitimately change source files. Require the reviewer to
-            # bind final versions and explicitly account for the discovery delta.
-            review = bounded_text(payload["review"], "review")
-            if payload.get("verified") is not True or not payload.get("reviewer"):
-                raise ValueError("verification_required")
-            if not current(json.loads(item["evidence"])) and not payload.get("source_change_explanation"):
-                raise ValueError("source_change_explanation_required")
-            acceptance = {"evidence": final, "review": review, "reviewer": payload["reviewer"],
-                          "source_change_explanation": payload.get("source_change_explanation"), "at": time.time()}
-            self.conn.execute("UPDATE closure_issues SET state='resolved',acceptance=?,revision=revision+1,updated=? WHERE id=?",
-                              (json.dumps(acceptance), time.time(), item["id"]))
-            self.event("accepted", acceptance, issue=item["id"], task=item["task_id"], notify=True)
+            return self._accept(payload)
+
+    def _accept(self, payload):
+        """The caller owns the transaction, including register-and-accept."""
+        item = self.get(payload["issue_id"])
+        if item["revision"] != payload.get("revision"): raise ValueError("revision_changed")
+        if item["state"] in TERMINAL: raise ValueError("issue_not_accepting")
+        proof = payload.get("completed_external")
+        receipt = None
+        if proof is not None:
+            # An actual unanswered choice, cancellation or declared pause is
+            # never released by retrospective completion evidence.
+            last_answer = self.conn.execute("SELECT choice FROM closure_choices WHERE issue_id=? AND answered IS NOT NULL ORDER BY answered DESC,rowid DESC LIMIT 1",
+                                            (item["id"],)).fetchone()
+            human_wait = last_answer is not None and last_answer["choice"] == "keep_waiting"
+            # Older duplicate registration could replace a declared block's
+            # state. Its last explicit transition still requires an explicit
+            # executor release; retrospective proof cannot erase that history.
+            last_transition = self.conn.execute("SELECT kind,data FROM closure_events WHERE issue_id=? AND kind IN ('state_changed','authority_scope_corrected','explicit_choice') ORDER BY seq DESC LIMIT 1",
+                                                (item["id"],)).fetchone()
+            declared_wait = bool(last_transition and
+                (last_transition["kind"] == "authority_scope_corrected"
+                 or last_transition["kind"] == "state_changed" and json.loads(last_transition["data"]).get("to") == "blocked"))
+            if (self.declared_block(item) or declared_wait or human_wait or self.conn.execute(
+                    "SELECT 1 FROM closure_choices WHERE issue_id=? AND answered IS NULL", (item["id"],)).fetchone()):
+                raise ValueError("completed_external_human_wait_preserved")
+            task = self.conn.execute("SELECT * FROM closure_tasks WHERE id=?", (item["task_id"],)).fetchone()
+            receipt = completed_external_receipt(task, item, proof)
+        elif item["state"] == "decision":
+            raise ValueError("issue_not_accepting")
+        root = Path(item["target_root"])
+        final = evidence(payload["evidence"], root)
+        review = bounded_text(payload["review"], "review")
+        if payload.get("verified") is not True or not payload.get("reviewer"):
+            raise ValueError("verification_required")
+        if not current(json.loads(item["evidence"])) and not payload.get("source_change_explanation"):
+            raise ValueError("source_change_explanation_required")
+        acceptance = {"evidence": final, "review": review, "reviewer": payload["reviewer"],
+                      "source_change_explanation": payload.get("source_change_explanation"), "at": time.time()}
+        if receipt: acceptance["completed_external"] = receipt
+        self.conn.execute("UPDATE closure_issues SET state='resolved',acceptance=?,error=NULL,recovery=NULL,revision=revision+1,updated=? WHERE id=?",
+                          (json.dumps(acceptance), time.time(), item["id"]))
+        self.event("accepted", acceptance, issue=item["id"], task=item["task_id"], notify=True)
         return self.get(item["id"])
 
     def cancellation_check(self, payload):
@@ -1162,6 +1622,14 @@ class Store:
         if task["complex"] and not independent and not review.get("independent_gap"):
             raise ValueError("independent_review_or_gap_required")
         rows = evidence(payload["evidence"], Path(task["scope_root"]))
+        goal_spec = goals.contract(self, task["id"])
+        if goal_spec or goals.requires_contract(self, task["id"]):
+            if not payload.get("final_response"):
+                raise ValueError("goal_review_requires_complete_delivery")
+            if owner_retired({"scope_root": task["scope_root"], "requirements": goal_spec["value"] if goal_spec else {}, "goal_review": payload.get("goal_review", {})}):
+                # Existing manual permits must cover the additional exact result paths.
+                if not manual_closure_allowed(task, {"requirements": goal_spec["value"] if goal_spec else {}, "goal_review": payload.get("goal_review", {})}):
+                    raise ValueError("goal_evidence_scope_not_allowed")
         # Optional for historical callers: old structural acceptance stays valid,
         # but it never gains final-wording qualification without a fresh review.
         if payload.get("final_response") is not None:
@@ -1181,6 +1649,9 @@ class Store:
             if hashlib.sha256(text.encode()).hexdigest() != bound["sha256"]:
                 raise ValueError("final_response_changed_during_read")
             artifact = json.loads(Path(review[artifact_key]["path"]).read_text())
+            goal_review = goals.prepare_review(self, task, payload, artifact, goal_spec)
+            if goal_review is not None:
+                review["goal_review"] = goal_review
             if (artifact.get("final_response_sha256") != bound["sha256"]
                     or artifact.get("wording_approved") is not True):
                 raise ValueError("independent_artifact_not_bound_to_wording")
@@ -1189,6 +1660,9 @@ class Store:
             facts = {"completion": final.get("completion"), "scope": bounded_text(final.get("scope"), "completion_scope", 500)}
             if facts["completion"] not in {"complete", "stage_complete", "partial", "incomplete"}:
                 raise ValueError("completion_invalid")
+            goal_status = goals.status(self, task, review, scope_allowed=True, spec=goal_spec)
+            if facts["completion"] in {"complete", "stage_complete"} and goal_status["goal_complete"] is False:
+                raise ValueError("user_goal_not_verified")
             followups = final.get("remaining")
             if not isinstance(followups, list) or len(followups) > 40:
                 raise ValueError("remaining_facts_required")
@@ -1218,10 +1692,19 @@ class Store:
             linked = self.conn.execute("SELECT * FROM closure_issues WHERE task_id=? OR id IN (SELECT issue_id FROM closure_events WHERE task_id=? AND kind='duplicate_linked')", (task["id"], task["id"])).fetchall()
             review["final_response"] = {**bound, **facts, "snapshot": delivery_snapshot(linked), "schema": 1}
         with self.transaction():
+            latest_goal = goals.contract(self, task["id"])
+            if (latest_goal["sha256"] if latest_goal else None) != (goal_spec["sha256"] if goal_spec else None):
+                raise ValueError("requirements_changed_during_audit")
+            if goal_spec and not goals.lineage_current(self, goal_spec):
+                raise ValueError("inherited_requirement_contract_changed")
+            if review.get("goal_review") and review["goal_review"]["history_sha256"] != digest(goals.review_history(self, task["id"])):
+                raise ValueError("omission_history_changed_during_audit")
             self.conn.execute("INSERT OR REPLACE INTO closure_audits VALUES(?,?,?,?,?,?)",
                               (task["id"], task["requirements_hash"], json.dumps(rows), json.dumps(review),
                                int(independent), time.time()))
             self.event("audited", {"independent": independent, "evidence": rows}, task=task["id"])
+            if review.get("goal_review"):
+                self.event("goal_reviewed_v1", {key: review["goal_review"][key] for key in ("omissions", "resolved_omissions", "observation_limits")}, task=task["id"])
         return self.task_status(task["id"], allow_manual=True)
 
     def task_status(self, identifier, *, allow_manual=False):
@@ -1231,7 +1714,9 @@ class Store:
                                  (identifier, identifier)).fetchall()
         audit = self.conn.execute("SELECT * FROM closure_audits WHERE task_id=?", (identifier,)).fetchone()
         review = json.loads(audit["review"]) if audit else {}
+        goal_spec = goals.contract(self, identifier)
         bundle = {**dict(task), "acceptance": review, "evidence": json.loads(audit["evidence"]) if audit else []}
+        if goal_spec: bundle["requirements"] = goal_spec["value"]
         restored = allow_manual and manual_closure_allowed(task)
         check_retired = manual_owner_retired if allow_manual else lambda task, item, paths=(): owner_retired(item, paths)
         check_effects = manual_effects_pending if allow_manual else lambda task, item: effects_pending(item)
@@ -1253,12 +1738,23 @@ class Store:
                   "remaining": remaining, "all_complete": valid and not remaining and (not task["complex"] or bool(audit["independent"]))}
         status["manual_restoration_active"] = restored
         status.update(self.closure_applicability(identifier))
+        # Ledger closure is a separate fact, never a substitute for an audit.
+        status["registered_items_complete"] = bool(scope_allowed and not remaining)
+        goal_status = (goals.status(self, task, review, scope_allowed=scope_allowed and valid, spec=goal_spec)
+                       if status["closure_required"] else {"goal_contract_sha256": None, "requirements_verified": False,
+                                                          "goal_complete": None, "unmet_requirements": []})
+        status.update(goal_status)
+        if status["goal_complete"] is not None:
+            status["goal_complete"] = bool(status["goal_complete"] and status["all_complete"])
+            status["all_complete"] = status["goal_complete"]
         final = review.get("final_response")
         covered = {x["issue_id"] for x in final["remaining"] if x["scope"] == "in_scope"} if final else set()
         status["wording_valid"] = bool(valid and final and current([final]) and final.get("snapshot") == delivery_snapshot(rows)
                                        and (not review.get("wording_artifact") or current([review["wording_artifact"]]))
                                        and covered == {x["id"] for x in remaining}
                                        and (final["completion"] not in {"complete", "stage_complete"} or not remaining))
+        if final and final["completion"] in {"complete", "stage_complete"} and status["goal_complete"] is False:
+            status["wording_valid"] = False
         status["final_response_sha256"] = final.get("sha256") if status["wording_valid"] else None
         status["delivery_ready"] = bool(status["wording_valid"] and not remaining)
         if not scope_allowed:
@@ -1272,12 +1768,18 @@ class Store:
         status["stop_decision"] = self.end_assessment(task, status, allow_manual=allow_manual)
         status["runtime"] = {item["id"]: self.runtime_view(item) for item in remaining}
         status["recovery_status"] = {item["id"]: self.recovery_view(item) for item in remaining}
+        latest_goal = goals.contract(self, identifier)
+        if (latest_goal["sha256"] if latest_goal else None) != (goal_spec["sha256"] if goal_spec else None):
+            status.update(goal_complete=False, all_complete=False, requirements_verified=False,
+                          wording_valid=False, final_response_sha256=None, delivery_ready=False)
+            status["stop_decision"] = {"decision": "continue_now", "reasons": ["原要求在检查中变化，重验当前版本"]}
         # A shared status call can hash files or inspect runtime after the first
         # permit read. Bind its final result to a still-current complete scope.
         if restored and not (manual_closure_allowed(task, bundle, linked_paths)
                 and all(manual_closure_allowed(task, dict(row)) for row in rows)):
-            status.update(audit_valid=False, all_complete=False, wording_valid=False,
+            status.update(audit_valid=False, all_complete=False, registered_items_complete=False, wording_valid=False,
                           final_response_sha256=None, delivery_ready=False, manual_restoration_active=False)
+            if status["goal_complete"] is not None: status["goal_complete"] = False
             status["stop_decision"] = {"decision": "unknown", "reasons": ["临时人工许可已失效或范围不符，需要原负责人重新核对"]}
         return status
 
@@ -1488,6 +1990,15 @@ def codex_thread(item):
         return None
 
 
+def codex_reply_allowed(item):
+    """A user reply is a discussion turn. It does not dispatch the issue."""
+    thread = codex_thread(item)
+    return (item["state"] not in TERMINAL and
+            (not item.get("thread_id") or bool(thread)) and
+            (item["dispatch_state"] == "new" or
+             (bool(thread) and item["dispatch_state"] in {"acknowledged", "received"})))
+
+
 def handoff_threads(database):
     """Read only the local queue's saved conversation identities, never bodies."""
     path = root_for(database) / "handoff.sqlite"
@@ -1655,6 +2166,7 @@ def _projection(database, identifier=None):
                            "state": item["state"], "revision": str(item["revision"]), "thread_id": item["thread_id"],
                            "codex_thread_id": direct_thread, "codex_open_via_handoff": not codex_thread(item) and bool(helper_thread),
                            "codex_handoff_available": can_handoff and not unavailable,
+                           "codex_reply_available": not retired and not unavailable and codex_reply_allowed(item),
                            "codex_assistance_available": bool(failure and not assistance_thread) and not unavailable,
                            "codex_assistance_token": failure["token"] if failure else None,
                            "codex_assistance_thread_id": assistance_thread,
@@ -1746,7 +2258,8 @@ def _tick_locked(store):
 
 
 NOTIFICATION_INTERVAL = 15 * 60
-NOTIFICATION_STATES = ("decision", "blocked", "resolved", "canceled", "dismissed", "recovery_ready")
+NOTIFICATION_STATES = ("decision", "blocked", "recovery_ready")
+UNCERTAIN_DISPATCH_STATES = {"uncertain", "send_uncertain", "creation_uncertain"}
 
 
 def _notice_state(row):
@@ -1764,11 +2277,21 @@ def _notice_state(row):
     return None
 
 
+def _notice_human_wait(store, row):
+    """A real answered wait silences its old event, never a later new decision."""
+    return store.conn.execute("""SELECT 1 FROM closure_choices c JOIN closure_events e
+        ON e.issue_id=c.issue_id AND e.kind='explicit_choice'
+        AND json_extract(e.data,'$.token')=c.token
+        WHERE c.issue_id=? AND c.choice='keep_waiting' AND c.answered IS NOT NULL
+        AND c.revision<? AND (e.seq>? OR c.revision+1=?) LIMIT 1""",
+        (row["issue_id"], row["revision"], row["event_seq"], row["revision"])).fetchone() is not None
+
+
 def _notify_pending(store):
     """One bounded digest; retain events, deferred requests and uncertainty.
 
-    Only counts and fixed local instructions enter the notification. Issue
-    summaries, reasons, evidence paths and private task text stay in AGI.
+    Only issue identifiers and fixed local instructions enter the notification. Issue
+    summaries, reasons, evidence paths and private task text stay in PSI.
     Existing requested/unknown records are neither replayed nor reclassified.
     """
     now = time.time()
@@ -1780,7 +2303,7 @@ def _notify_pending(store):
     if display.invalid or not display.unchanged():
         return
     with store.transaction():
-        rows = store.conn.execute("""SELECT n.event_seq,e.issue_id,e.kind,e.data,i.state,i.acceptance,i.dispatch_state
+        rows = store.conn.execute("""SELECT n.event_seq,e.issue_id,e.kind,e.data,i.state,i.acceptance,i.dispatch_state,i.revision,i.authority
             FROM closure_notifications n JOIN closure_events e ON e.seq=n.event_seq
             LEFT JOIN closure_issues i ON i.id=e.issue_id
             WHERE n.requested=0 AND n.error IS NULL ORDER BY n.event_seq""").fetchall()
@@ -1807,6 +2330,13 @@ def _notify_pending(store):
             if (state not in NOTIFICATION_STATES or (not recovery_valid if recovery_notice else state != row["state"])
                     or stale_completion):
                 store.conn.execute("UPDATE closure_notifications SET error='notification_obsolete' WHERE event_seq=?", (row["event_seq"],))
+            elif state in {"decision", "recovery_ready"} and _notice_human_wait(store, row):
+                store.conn.execute("UPDATE closure_notifications SET error='notification_human_wait' WHERE event_seq=?", (row["event_seq"],))
+            elif state == "blocked" and row["dispatch_state"] not in UNCERTAIN_DISPATCH_STATES:
+                # A technical wait owned by an agent is not a new user decision.
+                # Keep the event locally; a later genuine decision or unknown
+                # submission has its own event and remains eligible.
+                store.conn.execute("UPDATE closure_notifications SET error='notification_local_only' WHERE event_seq=?", (row["event_seq"],))
             else:
                 eligible.append(row)
         eligible = [row for row in eligible if not row["issue_id"] or not retired(row["issue_id"])]
@@ -1818,15 +2348,31 @@ def _notify_pending(store):
             last = store.conn.execute("""SELECT max(e.at) FROM closure_notifications n
                 JOIN closure_events e ON e.seq=n.event_seq WHERE n.requested=1 OR n.error='request_uncertain'""").fetchone()[0]
         if last is not None and now - last < NOTIFICATION_INTERVAL: return
+        identifiers = list(dict.fromkeys(row["issue_id"] for row in eligible))[:20]
+        eligible = [row for row in eligible if row["issue_id"] in identifiers]
         unique = {row["issue_id"]: _notice_state(row) for row in eligible}
         counts = {state: sum(value == state for value in unique.values()) for state in NOTIFICATION_STATES}
         notice_labels = {**LABELS, "recovery_ready": "恢复条件已满足"}
         labels = [f"{count}项{notice_labels[state]}" for state, count in counts.items() if count]
-        title = "AGI · " + "、".join(labels)
-        explanations = {"decision": "待决定事项需要你选择", "blocked": "受阻事项由负责人继续跟进",
-                        "resolved": "已解决事项已有验收记录", "canceled": "已核对取消事项的执行影响",
-                        "dismissed": "已核对关闭事项的执行影响", "recovery_ready": "恢复条件已满足，未安排自动执行"}
-        body = "；".join(explanations[state] for state, count in counts.items() if count) + "。打开 AGI → 注意力中心，查看具体事项。"
+        title = "PSI · " + "、".join(labels)
+        explanations = []
+        for identifier, row in {row["issue_id"]: row for row in eligible}.items():
+            state = unique[identifier]
+            prefix = f'事项 {identifier[:8]}（版本 {row["revision"]}）：'
+            if state == "decision":
+                authority = json.loads(row["authority"] or "{}")
+                reasons = [label for key, label in (("personal_choice", "涉及你的个人取舍"),
+                    ("new_permission", "需要新权限"), ("cost", "涉及费用"),
+                    ("external", "涉及对外操作")) if authority.get(key) is True]
+                if authority.get("reversible") is False: reasons.append("包含难以撤销的操作")
+                reason = "、".join(reasons) or "当前方案需要本人决定"
+                text = reason + "，相关操作保持等待。已保留原依据和方案；请在原事项选择继续、修改或暂缓。"
+            elif state == "blocked":
+                text = "原任务请求结果尚未确认，相关执行不能安全继续。已保留原请求记录和未知状态，未重发；请沿原事项核对原请求结果。"
+            else:
+                text = "恢复条件已核实满足，但尚未安排继续执行。已保留原暂停和人工决定；请在原事项决定是否继续。"
+            explanations.append(prefix + text)
+        body = "\n".join(explanations) + "\n详情沿用原事项和负责人会话。"
         sequences = [row["event_seq"] for row in eligible]
         # Persist the whole batch before entering the side effect. A crash or
         # uncertain subprocess outcome cannot fan this batch out or resend it.
@@ -1843,6 +2389,26 @@ def _notify_pending(store):
             # never reset an earlier unknown/requested batch.
             store.conn.executemany("UPDATE closure_notifications SET error=NULL WHERE event_seq=? AND requested=0 AND error='request_uncertain'", [(seq,) for seq in personal])
             store.event("notification_digest_owner_retired_before_send", {"retired_event_seqs": retired_sequences, "personal_deferred_event_seqs": personal})
+        return
+    # A human choice or newer issue version can arrive after the claim commits.
+    # No sender has been entered yet: release only this invocation's claims so
+    # the original queue re-evaluates current state/version on its next tick.
+    # Earlier unknown batches were excluded from eligible and stay untouched.
+    changed = not display.unchanged()
+    for row in eligible:
+        current_item = store.get(row["issue_id"])
+        if (current_item["state"] != row["state"] or current_item["revision"] != row["revision"]
+                or current_item["dispatch_state"] != row["dispatch_state"]):
+            changed = True
+        if _notice_state(row) == "recovery_ready":
+            plan = store.conn.execute("SELECT version FROM closure_recovery_plans WHERE issue_id=?", (row["issue_id"],)).fetchone()
+            if (not plan or plan["version"] != json.loads(row["data"]).get("version")
+                    or store.recovery_view(current_item)["status"] != "ready"):
+                changed = True
+    if changed:
+        with store.transaction():
+            store.conn.executemany("UPDATE closure_notifications SET error=NULL WHERE event_seq=? AND requested=0 AND error='request_uncertain'", [(seq,) for seq in sequences])
+            store.event("notification_digest_changed_before_send", {"event_seqs": sequences})
         return
     try:
         script = "display notification " + json.dumps(body, ensure_ascii=False) + " with title " + json.dumps(title, ensure_ascii=False)
@@ -1872,22 +2438,26 @@ def wake(database):
 
 def _main(argv=None, database=None):
     parser = argparse.ArgumentParser(description="Closure Steward private ledger")
-    parser.add_argument("action", choices=("begin", "register", "list", "issue", "status", "audit", "transition", "accept", "dispatch", "reconcile", "tick", "choice-preview", "decide", "cancellation-check", "recovery-register"))
+    parser.add_argument("action", choices=("begin", "requirements", "register", "list", "issue", "status", "trace", "audit", "transition", "accept", "dispatch", "reconcile", "tick", "choice-preview", "decide", "cancellation-check", "recovery-register"))
     parser.add_argument("--id")
     parser.add_argument("--input", help="JSON input file; otherwise standard input")
     parser.add_argument("--db", default=database)
     args = parser.parse_args(argv)
     payload = {}
-    if args.action in {"begin", "register", "audit", "transition", "accept", "decide", "cancellation-check", "recovery-register"}:
+    if args.action in {"begin", "requirements", "register", "audit", "transition", "accept", "decide", "cancellation-check", "recovery-register"}:
         raw = Path(args.input).read_text() if args.input else sys.stdin.read(128 * 1024 + 1)
         if len(raw) > 128 * 1024: raise ValueError("payload_oversize")
         payload = json.loads(raw)
     if not args.db: raise ValueError("database_path_required")
     if args.action == "tick": tick(args.db); result = {"status": "checked"}
     elif args.action == "list": result = {"items": projection(args.db)}
+    elif args.action == "trace":
+        from .closure_trace import trace
+        result = trace(args.db, args.id or "")
     else:
         with Store(args.db, readonly=args.action in {"status", "issue"}) as store:
             if args.action == "begin": result = store.begin(payload)
+            elif args.action == "requirements": result = store.requirements(payload)
             elif args.action == "register": result = store.register(payload, native_context=store.recovery_caller() if payload.get("scope_correction") is not None else None)
             elif args.action == "recovery-register": result = store.register_recovery(payload, native_context=store.recovery_caller())
             elif args.action == "audit": result = store.audit(payload)

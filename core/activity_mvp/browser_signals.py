@@ -281,7 +281,7 @@ def native_host_core_root() -> Path:
     raw = os.environ.get("PERSONAL_AI_MONITOR_CORE_DIR") or os.environ.get("PAM_CORE_DIR")
     if raw:
         return Path(raw).expanduser()
-    app_support = Path.home() / "Library/Application Support/Personal AI Monitor/core"
+    app_support = Path.home() / "Library/Application Support/PSI/core"
     if app_support.exists():
         return app_support
     return Path(__file__).resolve().parents[1]

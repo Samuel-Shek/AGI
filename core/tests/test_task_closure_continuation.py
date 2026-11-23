@@ -111,6 +111,22 @@ class ContinuationTests(ClosureTests):
         row = {"conditions": json.dumps([{"kind": "owner_available"}])}
         self.assertEqual(self.store.recovery_conditions(item, row), "unknown")
 
+    def test_recovery_condition_lost_after_claim_defers_without_delivery(self):
+        item = self.issue(category="main")
+        extra = self.root / "after-claim-recovery.txt"; extra.write_text("available")
+        self.plan(item, [{"kind": "file_readable", "path": str(extra)}]); self.store.check_recovery(item["id"])
+        original = self.store.event
+        def event(kind, *args, **kwargs):
+            result = original(kind, *args, **kwargs)
+            if kind == "notification_digest_started": extra.unlink()
+            return result
+        with patch.object(self.store, "event", side_effect=event), patch.object(closure.subprocess, "run") as notice:
+            closure._notify_pending(self.store)
+        notice.assert_not_called()
+        self.assertEqual(self.store.recovery_view(item)["status"], "waiting")
+        pending = self.store.conn.execute("SELECT requested,error FROM closure_notifications").fetchone()
+        self.assertEqual(tuple(pending), (0, None))
+
     def test_no_arbitrary_commands_symlinks_or_outside_paths(self):
         item = self.issue(category="main")
         alias = self.root / "alias"; alias.symlink_to(self.source)

@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 
 
-SCHEMA_VERSION = 32
+SCHEMA_VERSION = 33
 SQLITE_BUSY_TIMEOUT_SECONDS = 30
 SQLITE_BUSY_TIMEOUT_MS = SQLITE_BUSY_TIMEOUT_SECONDS * 1000
 SOURCE_STATUSES = ("active", "expired_deleted", "user_deleted", "revoked")
@@ -430,6 +430,23 @@ def _init_schema_locked(
           );
         END;
 
+        -- Document subtree exclusions are authorization, not optional metadata.
+        -- Older programs must stop rather than read through these restrictions.
+        CREATE TRIGGER IF NOT EXISTS pam_schema33_guard_insert
+        BEFORE INSERT ON meta
+        WHEN NEW.key = 'schema_version' AND CAST(NEW.value AS INTEGER) < 33
+          AND COALESCE((SELECT CAST(value AS INTEGER) FROM meta WHERE key='schema_version'),0) >= 33
+        BEGIN
+          SELECT RAISE(ABORT, 'PAM schema 33 requires a compatible document-exclusion reader; database downgrade forbidden');
+        END;
+        CREATE TRIGGER IF NOT EXISTS pam_schema33_guard_update
+        BEFORE UPDATE ON meta
+        WHEN OLD.key='schema_version' AND CAST(OLD.value AS INTEGER) >= 33
+          AND (NEW.key <> 'schema_version' OR CAST(NEW.value AS INTEGER) < 33)
+        BEGIN
+          SELECT RAISE(ABORT, 'PAM schema 33 requires a compatible document-exclusion reader; database downgrade forbidden');
+        END;
+
         CREATE TABLE IF NOT EXISTS settings (
           key TEXT PRIMARY KEY,
           value TEXT NOT NULL,
@@ -635,6 +652,12 @@ def _init_schema_locked(
           baseline_completed_at TEXT,
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS file_watch_root_exclusions (
+          root_id TEXT NOT NULL,
+          path_hmac TEXT NOT NULL,
+          PRIMARY KEY(root_id, path_hmac)
         );
 
         CREATE TABLE IF NOT EXISTS file_watch_checkpoints (
@@ -2169,9 +2192,24 @@ def _migrate_source_status_table(conn: sqlite3.Connection, table_name: str) -> N
     )
 
 
+def document_schema_activation_present(conn: sqlite3.Connection) -> bool:
+    for table in ('file_watch_root_exclusions', 'file_watch_root_migrations'):
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+            if conn.execute('SELECT 1 FROM ' + table + ' LIMIT 1').fetchone():
+                return True
+    return False
+
+
 def _set_schema_version(conn: sqlite3.Connection) -> None:
     version = str(SCHEMA_VERSION)
     current = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+    # Installing the reader alone adds no new authorization. Keep the accepted
+    # v32 program/data pair recoverable until a separately approved migration
+    # atomically activates exclusions and writes v33. Never lower an active v33.
+    if SCHEMA_VERSION == 33 and (not current or int(current['value']) < 33):
+        if document_schema_activation_present(conn):
+            raise sqlite3.DatabaseError('document exclusion authorization has inconsistent schema activation')
+        version = "32"
     if current and current["value"] == version:
         return
     conn.execute(

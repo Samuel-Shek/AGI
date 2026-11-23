@@ -1,18 +1,20 @@
-# AGI
+# PSI
 
 [中文说明](README.zh-CN.md)
 
-AGI is an experimental macOS app for reviewing local work, tracking file changes,
+PSI (previously AGI) is an experimental macOS app for reviewing local work, tracking file changes,
 and managing evidence-backed improvement candidates. It combines a SwiftUI app
 with a Python core and evolved from Personal AI Monitor.
 
-The name is a project name. This repository does not demonstrate artificial
-general intelligence, reliable autonomous repair, or proven long-term benefit.
+The repository keeps its original GitHub address. Automated repair and reflection
+are experimental and still need evaluation in everyday use.
 
 ## What is included
 
 - A native Mac app for recent activity, file history, decisions, and system status.
-- File tracking with coverage checks and explicit uncertainty about authorship.
+- File history refreshes while visible and reports gaps in tracking.
+- A local workbench groups questions and processing records, saves drafts, and
+  can reopen a Codex discussion when the local integration is configured.
 - Local source admission, revocation, privacy filtering, and audit records.
 - Optional conversation reflection and controlled improvement workflows.
 - Core, Swift, and synthetic integration tests; browser-extension source.
@@ -34,6 +36,9 @@ cd AGI
 python3 -I -S -B core/pam_isolated_launcher.py --help
 swift build --package-path apps/PersonalAIMonitorMenuBar
 ```
+
+You can try the workbench with the included synthetic data. See the
+[local demo](docs/INSTALL.md#workbench-demo).
 
 The Python core uses the standard library. The source-admission helpers needed
 for core imports are bundled under `core/activity_mvp/source_governance`.

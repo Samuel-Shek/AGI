@@ -10,22 +10,12 @@ import time
 from datetime import datetime
 from .store import Store,ZONE,day,packed,atomic
 from . import sources,journal,model
-from . import autonomy
+from . import autonomy, health
 
 
 def notification_summary(store):
-    store=filtered(store)
-    pending=store.rows('SELECT id,kind FROM notifications WHERE delivered=0 ORDER BY created LIMIT 20')
-    from ..presentation_scope import DisplayScope
-    scope=DisplayScope(store.root.parent)
-    if scope.enabled or scope.invalid:
-        visible=[]
-        for notice in pending:
-            refs=store.rows('SELECT i.* FROM incidents i JOIN notifications n ON n.incident_id=i.id WHERE n.id=?',(notice['id'],))
-            messages=store.rows('SELECT m.* FROM messages m JOIN quotes q ON q.message_id=m.id JOIN notifications n ON n.incident_id=q.incident_id WHERE n.id=?',(notice['id'],))
-            if not scope.hidden([refs,messages]) and scope.unchanged():visible.append(notice)
-        pending=visible
-    return {'pending':pending,'title':'AGI 有改进事项需要关注','body':'打开“批评与改进”查看原因、修复结果或待决策事项。'}
+    from .notifications import summary
+    return summary(store)
 
 
 def autonomous_installation_current(store, incident):
@@ -109,14 +99,18 @@ def record_sample(store,incident,reference,outcome,observed,receipt):
     store.conn.execute('INSERT OR IGNORE INTO samples VALUES(?,?,?,?,?,1)',(digest([incident,reference]),incident,observed,outcome,reference))
 
 def tick(root=None,*,analyze=True,repair=True,now=None):
+    from ..local_checks import phase, LOCAL_SECONDS, LocalCheckTimeout
     now=time.time() if now is None else now
     with Store(root) as original_store:
         store=filtered(original_store)
+        analysis_family=None
         descriptor=os.open(store.root/'controller.lock',os.O_WRONLY|os.O_CREAT|os.O_NOFOLLOW,0o600)
         try:
             try:fcntl.flock(descriptor,fcntl.LOCK_EX|fcntl.LOCK_NB)
             except BlockingIOError:return {'status':'busy'}
             if not store.active():return {'status':'paused'}
+            # Migrate predecessor evidence before rotating analysis_last_family.
+            store.set('analysis_health',health.unresolved_analysis(store))
             # Interrupted executions remain unknown; never automatically replay installation.
             for job in store.rows("SELECT * FROM jobs WHERE state IN ('building','deploying')"):
                 store.conn.execute("UPDATE jobs SET state='unknown',updated=? WHERE id=?",(now,job['id']))
@@ -125,42 +119,76 @@ def tick(root=None,*,analyze=True,repair=True,now=None):
                     store.log('interrupted_job_needs_reconciliation',job=job['id'])
                 else:
                     store.decision(job['incident_id'],{'reason':'上次执行中断，结果待核对。','recommendation':'先核对安装与恢复记录，再决定后续。','choices':['investigate','defer']})
-            results={'status':'ok','sources':sources.scan(store)}
+            with phase(store,'feedback_scan',LOCAL_SECONDS):
+                results={'status':'ok','sources':sources.scan(store)}
             if autonomy.active(store):
                 results['autonomy']=autonomy.synchronize(store)
                 from .task_maintenance import tick as task_maintenance_tick
-                try: results['task_maintenance']=task_maintenance_tick(store)
+                try:
+                    with phase(store,'task_maintenance'):
+                        results['task_maintenance']=task_maintenance_tick(store)
                 except (OSError,ValueError,PermissionError,RuntimeError,sqlite3.Error) as e:
                     results['task_maintenance']={'status':'blocked','reason':type(e).__name__}
                     store.set('task_maintenance_error',type(e).__name__)
                 from .sync_center import tick as sync_center_tick
-                try: results['sync_center']=sync_center_tick(store,allow_repair=repair)
+                try:
+                    with phase(store,'sync_center'):
+                        results['sync_center']=sync_center_tick(store,allow_repair=repair)
                 except (OSError,ValueError,PermissionError,RuntimeError) as e:
-                    results['sync_center']={'status':'investigating','reason':type(e).__name__}
+                    results['sync_center']={'status':'blocked','reason':type(e).__name__}
                     store.set('sync_center_error',type(e).__name__)
 
                 from .memory_autonomy import tick as memory_tick
-                try: results['memory']=memory_tick(store,limit=5)
-                except (OSError,ValueError,PermissionError,RuntimeError) as e:
-                    results['memory']={'status':'blocked','reason':type(e).__name__}
+                try:
+                    with phase(store,'memory'):
+                        results['memory']=memory_tick(store,limit=5)
+                except (OSError,ValueError,PermissionError,RuntimeError,sqlite3.Error) as e:
+                    # The worker uses durable statements and an external writer.
+                    # A failure cannot certify that earlier actions rolled back.
+                    # Preserve those records; this tick may continue independent
+                    # read/notification work, but cannot start analysis or repairs.
+                    results['memory']={'status':'blocked','reason':type(e).__name__,
+                                       'partial_writes_possible':True,
+                                       'diagnostic':health.exception_evidence(e)}
+                    results['status']='partial'
+                    analyze=False;repair=False
                     store.set('memory_autonomy_error',type(e).__name__)
+                if results['memory'].get('error') or results['memory'].get('status') in {'blocked','unavailable','partial'}:
+                    results['status']='partial'
+                    analyze=False;repair=False
+                    episode=store.get('memory_failure_episode',{}) or {'started':now,'failures':0}
+                    episode['failures']+=1
+                    store.set('memory_failure_episode',episode)
+                    if episode['failures']==3:store.notify('memory-'+str(episode['started']),'memory_failure')
+                else:
+                    store.set('memory_failure_episode',{})
+                    store.set('memory_autonomy_error','')
                 # Fixed probes are private synthetic inputs, not new user sources.
                 from . import proactive
-                try: results['proactive_discovery'] = proactive.discover(store)
-                except (OSError,ValueError,PermissionError,RuntimeError) as e:
-                    results['proactive_discovery'] = {'status':'deferred','reason':type(e).__name__}
+                if results['status'] != 'partial':
+                    try:
+                        with phase(store,'proactive'):
+                            results['proactive_discovery'] = proactive.discover(store)
+                    except (OSError,ValueError,PermissionError,RuntimeError) as e:
+                        results['proactive_discovery'] = {'status':'deferred','reason':type(e).__name__}
             if autonomy.enabled(store) and not autonomy.active(store): analyze=False;repair=False
             from ..reflection import service as reflection_service
-            try: results['reflection_sources']=reflection_service.scan(store,now)
+            try:
+                with phase(store,'reflection_scan',LOCAL_SECONDS):
+                    results['reflection_sources']=reflection_service.scan(store,now)
             except (OSError,ValueError,sqlite3.Error) as e:
                 results['reflection_sources']={'status':'unavailable','reason':type(e).__name__}
             if analyze:
                 try:
                     if time.time()<store.get('analysis_retry_at',0):raise PermissionError('analysis_backoff')
                     store.set('analysis_last_result',{'status':'running','started':time.time()})
-                    reflection_due=reflection_service.ready(store)
-                    feedback_due=bool(store.get('investigate_requests',[]) or store.conn.execute("SELECT 1 FROM messages WHERE state='pending' LIMIT 1").fetchone() or autonomy.active(store))
+                    with phase(store,'reflection_ready',LOCAL_SECONDS):
+                        reflection_due=reflection_service.ready(store)
+                    with phase(store,'feedback_ready',LOCAL_SECONDS):
+                        feedback_pending=bool(store.conn.execute("SELECT 1 FROM messages WHERE state='pending' LIMIT 1").fetchone())
+                        feedback_due=bool(store.get('investigate_requests',[]) or feedback_pending or autonomy.active(store))
                     reflection_turn=reflection_due and (not feedback_due or store.get('analysis_last_family','feedback')!='reflection')
+                    analysis_family='reflection' if reflection_turn else 'feedback'
                     # Rotate even when a selected family fails, while keeping
                     # the shared account backoff and unknown-call accounting.
                     store.set('analysis_last_family','reflection' if reflection_turn else 'feedback')
@@ -168,7 +196,7 @@ def tick(root=None,*,analyze=True,repair=True,now=None):
                         results['analysis']=reflection_service.analyze(store)
                         store.set('analysis_last_family','reflection')
                     elif store.get('investigate_requests',[]): results['analysis']=model.investigate_requested(store)
-                    elif store.conn.execute("SELECT count(*) FROM messages WHERE state='pending'").fetchone()[0]: results['analysis']=model.analyze(store)
+                    elif feedback_pending: results['analysis']=model.analyze(store)
                     elif autonomy.active(store): results['analysis']=autonomy.investigate(store)
                     else: results['analysis']=model.analyze(store)
                     if not reflection_turn:store.set('analysis_last_family','feedback')
@@ -186,6 +214,7 @@ def tick(root=None,*,analyze=True,repair=True,now=None):
                         store.set('analysis_retry_at',time.time()+delay)
                         if failures==1:store.set('analysis_failure_episode',now)
                         if failures==3:store.notify('analysis-'+str(store.get('analysis_failure_episode')),'analysis_failure')
+                health.record_analysis(store,analysis_family,results['analysis'])
                 store.set('analysis_last_result',{**results['analysis'],'finished':time.time()})
             today=day(now);local=datetime.fromtimestamp(now,ZONE)
             if (local.hour,local.minute)>=(9,30) and store.get('last_daily')!=today:
@@ -212,19 +241,44 @@ def tick(root=None,*,analyze=True,repair=True,now=None):
             results['journal']=journal.render(store)
             from .probes import observe_journal
             results['natural_checks']=observe_journal(store)
-            try:results['reflection_notifications']=reflection_service.notify(store)
-            except (OSError,ValueError,subprocess.TimeoutExpired) as e:
-                results['reflection_notifications']={'status':'unavailable','reason':type(e).__name__}
-            store.set('last_tick',now)
-            store.log('tick_completed',new_messages=sum(s.get('added',0) for s in results['sources']))
-            pending=notification_summary(store)['pending']
-            if pending:
-                try:delivered=subprocess.run(['/usr/bin/osascript','-e','display notification "打开 AGI 的批评与改进，查看结果或待决策事项。" with title "AGI 有改进事项需要关注"'],capture_output=True,timeout=8)
-                except (OSError,subprocess.TimeoutExpired):delivered=None
-                if delivered is not None and delivered.returncode==0:
-                    for notice in pending:store.conn.execute('UPDATE notifications SET delivered=1 WHERE id=?',(notice['id'],))
-                    store.log('notification_delivery_requested',count=len(pending))
+            # Ordinary insights remain in their original records without
+            # creating an obligation to open the control console.
+            results['reflection_notifications']={'requested':0,'status':'quiet'}
+            from .notifications import deliver
+            try:
+                results['notifications']=deliver(store)
+                if results['notifications'].get('unknown'):results['status']='partial'
+            except (OSError,ValueError,PermissionError,RuntimeError,sqlite3.Error) as error:
+                results['notifications']={'status':'partial','reason':type(error).__name__}
+                results['status']='partial'
+            with phase(store,'finish'):
+                results['source_health']=health.source_health(store,results['sources'])
+                analysis_health=health.unresolved_analysis(store)
+                stages={k:health.summary(v) for k,v in results.items() if isinstance(v,dict)}
+                if analysis_health or any(health.incomplete(v) for v in results.values()):results['status']='partial'
+                store.set('last_tick',now)
+                store.set('last_tick_result',{'status':results['status'],'finished_at':time.time(),
+                                             'memory':results.get('memory',{}),'stages':stages,
+                                             'analysis_health':analysis_health})
+            store.log('tick_completed',new_messages=sum(s.get('added',0) for s in results['sources']),status=results['status'])
             return results
+        except LocalCheckTimeout as error:
+            result={'status':'deferred','reason':'local_check_timeout','phase':error.phase}
+            health.record_analysis(store,analysis_family,result)
+            store.set('last_tick_result',{'status':'partial','finished_at':time.time(),
+                                         'stages':{error.phase:health.summary(result)},
+                                         'analysis_health':health.unresolved_analysis(store)})
+            store.set('analysis_last_result',{**result,'finished':time.time()})
+            store.log('local_check_deferred',phase=error.phase)
+            # The interrupted scan is not a prerequisite for the existing
+            # outbox. A persistently failing phase must not silence its notice.
+            from .notifications import deliver
+            try:notice=deliver(store)
+            except (OSError,ValueError,PermissionError,RuntimeError,sqlite3.Error) as failure:
+                notice={'status':'partial','reason':type(failure).__name__}
+            recorded=store.get('last_tick_result',{})
+            store.set('last_tick_result',{**recorded,'notifications':notice})
+            return result
         finally:os.close(descriptor)
 
 import sys

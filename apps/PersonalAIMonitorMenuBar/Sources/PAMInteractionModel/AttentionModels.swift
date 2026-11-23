@@ -17,11 +17,56 @@ public struct AttentionMember: Identifiable {
     public let id: String
     public let title: String
     public let reason: String
+    public let publicationVersion: String?
     public init?(_ value: [String: Any]) {
         guard let id = value["id"] as? String, !id.isEmpty else { return nil }
         self.id = id
         title = value["title"] as? String ?? "待复核的记忆"
         reason = value["reason"] as? String ?? ""
+        if let hash = value["content_sha256"] as? String, hash.count == 64,
+           let fingerprint = value["candidate_fingerprint"] as? String, !fingerprint.isEmpty,
+           let policy = value["policy_version"] as? String, !policy.isEmpty {
+            publicationVersion = hash + ":" + fingerprint + ":" + policy
+        } else { publicationVersion = nil }
+    }
+}
+
+public struct ClosureTraceEvent: Identifiable {
+    public let id: Int
+    public let label: String
+    public let at: Double?
+}
+
+public struct ClosureTrace {
+    public let state: String
+    public let label: String
+    public let events: [ClosureTraceEvent]
+    public let truncated: Bool
+    public let decisions: Int?
+    public let duplicates: Int?
+    public let notifications: Int?
+    public let elapsedSeconds: Double?
+    public init?(_ raw: [String: Any], id: String, revision: String) {
+        guard raw["interface"] as? String == "task-closure-trace", raw["contract"] as? Int == 1,
+              raw["raw_access"] as? Bool == false, raw["id"] as? String == id,
+              raw["revision"] as? String == revision,
+              let state = raw["state"] as? String,
+              ["inactive","unknown","canceled","waiting_decision","verified","running","verification","received","blocked","pending"].contains(state),
+              let label = raw["label"] as? String,
+              let timeline = raw["timeline"] as? [[String: Any]], timeline.count <= 200 else { return nil }
+        self.state = state; self.label = label
+        events = timeline.compactMap { row in
+            guard let sequence = row["sequence"] as? Int, let label = row["label"] as? String else { return nil }
+            let value = row["at"] as? Double
+            return ClosureTraceEvent(id: sequence, label: label, at: value.flatMap { $0.isFinite && $0 > 0 ? $0 : nil })
+        }
+        guard events.count == timeline.count, Set(events.map(\.id)).count == events.count else { return nil }
+        truncated = raw["timeline_truncated"] as? Bool ?? false
+        let metrics = raw["metrics"] as? [String: Any] ?? [:]
+        decisions = (metrics["explicit_decision_count"] as? Int).flatMap { $0 >= 0 ? $0 : nil }
+        duplicates = (metrics["duplicate_registration_count"] as? Int).flatMap { $0 >= 0 ? $0 : nil }
+        notifications = (metrics["notification_request_count"] as? Int).flatMap { $0 >= 0 ? $0 : nil }
+        elapsedSeconds = (metrics["registration_to_acceptance_seconds"] as? Double).flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
     }
 }
 
@@ -55,6 +100,7 @@ public struct AttentionIssue: Identifiable {
     public let closureRuntimeObservedAt: Double?
     public let closureRuntimeElapsedAt: Double?
     public let closureRecoveryLabel: String
+    public let closureTrace: ClosureTrace?
     public init?(_ value: [String: Any]) {
         guard let id = value["id"] as? String, !id.isEmpty,
               let kind = value["kind"] as? String,
@@ -69,6 +115,9 @@ public struct AttentionIssue: Identifiable {
         attempts = value["attempts"] as? String ?? ""
         completionRule = value["completion_rule"] as? String ?? ""
         revision = value["revision"] as? String ?? ""
+        if let rawTrace = value["closure_trace"] as? [String: Any] {
+            closureTrace = ClosureTrace(rawTrace, id: id, revision: revision)
+        } else { closureTrace = nil }
         groupKey = value["group_key"] as? String ?? ""
         closureState = value["state"] as? String ?? ""
         if let raw = value["current_verification"] {
@@ -242,5 +291,38 @@ public struct MemoryRevealSession {
         generation = UUID(); self.presentationID = UUID()
         identifier = ""; state = "closed"; text = ""; scope = ""
         return true
+    }
+}
+
+/// Called only by an explicit decision button. No preview is made while reading.
+@MainActor
+public enum AttentionClosureChoice {
+    public static func submit(id: String, revision: String, choice: String,
+                              current: () -> Bool,
+                              preview: () async -> String,
+                              decide: (String) async -> String) async -> (raw: String, outcome: AttentionWriteOutcome) {
+        let unsubmitted = "{\"decision_submitted\":false}"
+        guard ["accept_recommendation", "cancel", "keep_waiting"].contains(choice), current() else { return (unsubmitted, .rejected) }
+        let raw = await preview()
+        guard current(), let bytes = raw.data(using: .utf8),
+              let value = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any],
+              value["issue_id"] as? String == id, value["revision"] as? Int == Int(revision),
+              value["default"] is NSNull, (value["choices"] as? [String])?.contains(choice) == true,
+              let token = value["token"] as? String, !token.isEmpty,
+              let payload = try? JSONSerialization.data(withJSONObject: ["token":token, "issue_id":id, "revision":Int(revision) ?? -1, "choice":choice]),
+              let input = String(data:payload, encoding:.utf8) else { return (unsubmitted, .rejected) }
+        let receipt = await decide(input)
+        let receiptValue = receipt.data(using:.utf8).flatMap { try? JSONSerialization.jsonObject(with:$0) as? [String:Any] }
+        return (receipt, AttentionWriteOutcome.closure(receiptValue, id:id, revision:revision))
+    }
+}
+
+/// Missing history cannot clear a known unfinished request, even after reopening.
+public enum AttentionClosureHandoffRead {
+    public static func accepts(_ response: [String:Any], unconfirmedRequest: Bool, previousStatus: String?) -> Bool {
+        let unfinished = unconfirmedRequest || ["queued", "preparing", "opening", "sending", "verifying", "uncertain", "failed"].contains(previousStatus ?? "")
+        if unfinished && !(response["handoff"] is [String:Any]) { return false }
+        return response["history_unknown"] as? Bool != true || !unfinished
+
     }
 }

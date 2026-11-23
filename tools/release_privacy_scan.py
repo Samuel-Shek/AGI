@@ -51,9 +51,9 @@ ALLOWED_IMAGE_RE = re.compile(
 )
 # Approved source artwork, bound to bytes rather than a general image directory.
 APP_ICON_SOURCE = "assets/agi/AGI-app-icon.png"
-APP_ICON_SHA256 = "57dfcad94ed8a467c2e70ef6eeeafed40f5b08b0643c7c10bb52b3b9937795eb"
+APP_ICON_SHA256 = "c75198611624773611c2acd7763884b7f05206af849328f22475708b4ea84100"
 APP_ICON_COMPILED = "assets/agi/AGI-app-icon.icns"
-APP_ICON_COMPILED_SHA256 = "395269636a6528165d20645c81e8078e12808d24480d0c7b28de8d1b3fe86270"
+APP_ICON_COMPILED_SHA256 = "bf03ece61c6900917cbf6f757638f204e6e8e4345fd955c5621eb93a6c515ffc"
 EXTENSION_FORBIDDEN_PERMISSIONS = {
     "history",
     "bookmarks",

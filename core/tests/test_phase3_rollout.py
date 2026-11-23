@@ -376,8 +376,8 @@ class Phase3RolloutTests(Phase3Fixture):
                 )
                 shadow_db = config.workspace / "shadow" / "activity.sqlite"
                 self.assertEqual(
-                    rollout._sqlite_probe(shadow_db, expected_schema=SCHEMA_VERSION)["schema"],
-                    SCHEMA_VERSION,
+                    rollout._sqlite_probe(shadow_db, expected_schema=32)["schema"],
+                    32,
                 )
                 return
             result = rollout.shadow(
@@ -720,7 +720,7 @@ class Phase3RolloutTests(Phase3Fixture):
                 for name in (
                     "core",
                     "Swift tests (Xcode 15.4)",
-                    "Swift tests (Xcode 16.4)",
+                    "Swift tests (Xcode 16.2)",
                     "app-build",
                 )
             ]
@@ -1443,7 +1443,9 @@ class Phase3RolloutTests(Phase3Fixture):
             conn = ensure_ready(config.live_database)
             try:
                 conn.execute("DROP TRIGGER IF EXISTS pam_schema32_guard_insert")
+                conn.execute("DROP TRIGGER IF EXISTS pam_schema33_guard_insert")
                 conn.execute("DROP TRIGGER IF EXISTS pam_schema32_guard_update")
+                conn.execute("DROP TRIGGER IF EXISTS pam_schema33_guard_update")
                 conn.execute("UPDATE meta SET value='31' WHERE key='schema_version'")
                 conn.execute(
                     "UPDATE settings SET value='true' WHERE key=?",
@@ -1877,7 +1879,9 @@ class Phase3RolloutTests(Phase3Fixture):
         conn = ensure_ready(database)
         try:
             conn.execute("DROP TRIGGER IF EXISTS pam_schema32_guard_insert")
+            conn.execute("DROP TRIGGER IF EXISTS pam_schema33_guard_insert")
             conn.execute("DROP TRIGGER IF EXISTS pam_schema32_guard_update")
+            conn.execute("DROP TRIGGER IF EXISTS pam_schema33_guard_update")
             conn.execute("UPDATE meta SET value='31' WHERE key='schema_version'")
             for key in rollout.PERMANENT_SAFETY_GATES:
                 conn.execute("UPDATE settings SET value='false' WHERE key=?", (key,))
@@ -4712,8 +4716,7 @@ class Phase3RolloutTests(Phase3Fixture):
         self.assertIn("branches: [main, release/v0.4.0-context-console]", workflow)
         self.assertIn("runner: macos-14", workflow)
         self.assertIn("/Applications/Xcode_15.4.app/Contents/Developer", workflow)
-        self.assertIn("runner: macos-15", workflow)
-        self.assertIn("/Applications/Xcode_16.4.app/Contents/Developer", workflow)
+        self.assertIn("/Applications/Xcode_16.2.app/Contents/Developer", workflow)
         self.assertIn("bash ./tools/run-swift-release-tests.sh", workflow)
         self.assertIn("PAM_SWIFT_TEST_EVIDENCE_DIR", workflow)
         self.assertIn('require_swift_testing: "0"', workflow)

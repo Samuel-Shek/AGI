@@ -1,5 +1,6 @@
 """Read-only, content-free progress for the native home page."""
 import time
+from .health import unresolved_analysis
 
 
 def progress(store, now=None):
@@ -18,7 +19,7 @@ def progress(store, now=None):
     elif running: state = 'running'
     elif retry > now: state = 'retrying'
     elif started or not last_tick or now-last_tick > 1800: state = 'stale'
-    elif store.get('last_error', ''): state = 'error'
+    elif store.get('last_error', '') or store.get('last_tick_result', {}).get('status') == 'partial' or unresolved_analysis(store): state = 'error'
     else: state = 'current'
     return {'state': state, 'observed_at': now, 'incident_count': sum(counts.values()),
             'analyzed_message_count': messages.get('classified', 0)+messages.get('excluded', 0),

@@ -672,7 +672,7 @@ class CoreFlowTests(CoreFixture):
         backup_db.parent.mkdir(parents=True)
         backup_db.write_bytes(b"sqlite backup")
         backup_db.chmod(0o644)
-        live_db = fake_home / "Library/Application Support/Personal AI Monitor/core/data/activity.sqlite"
+        live_db = fake_home / "Library/Application Support/PSI/core/data/activity.sqlite"
         live_db.parent.mkdir(parents=True)
         live_db.write_bytes(b"live sqlite")
         live_db.chmod(0o600)
@@ -702,7 +702,7 @@ class CoreFlowTests(CoreFixture):
 
     def test_backup_hygiene_reports_release_backups_metadata_without_reading_contents(self) -> None:
         fake_home = self.root / "home"
-        live_core = fake_home / "Library/Application Support/Personal AI Monitor/core"
+        live_core = fake_home / "Library/Application Support/PSI/core"
         release_root = live_core.parent / "release-backups"
         first_backup = release_root / "v0.5.0-app"
         second_backup = release_root / "v0.5.0-core"
@@ -756,7 +756,7 @@ class CoreFlowTests(CoreFixture):
 
     def test_backup_hygiene_reports_invalidated_ha_cache_residue_without_deleting(self) -> None:
         fake_home = self.root / "home"
-        live_core = fake_home / "Library/Application Support/Personal AI Monitor/core"
+        live_core = fake_home / "Library/Application Support/PSI/core"
         live_db = live_core / "data/activity.sqlite"
         live_db.parent.mkdir(parents=True, exist_ok=True)
         live_conn = ensure_ready(live_db)
@@ -829,7 +829,7 @@ class CoreFlowTests(CoreFixture):
 
     def test_hygiene_cleanup_applies_only_invalid_live_ha_cache_residue(self) -> None:
         fake_home = self.root / "home"
-        live_core = fake_home / "Library/Application Support/Personal AI Monitor/core"
+        live_core = fake_home / "Library/Application Support/PSI/core"
         live_db = live_core / "data/activity.sqlite"
         live_conn = ensure_ready(live_db)
         try:
@@ -915,7 +915,7 @@ class CoreFlowTests(CoreFixture):
 
     def test_data_hygiene_reports_old_activity_export_cache_without_deleting(self) -> None:
         fake_home = self.root / "home"
-        live_core = fake_home / "Library/Application Support/Personal AI Monitor/core"
+        live_core = fake_home / "Library/Application Support/PSI/core"
         live_db = live_core / "data/activity.sqlite"
         live_conn = ensure_ready(live_db)
         live_conn.close()
@@ -990,7 +990,7 @@ class CoreFlowTests(CoreFixture):
 
     def test_hygiene_cleanup_normalizes_runtime_permissions_and_preserves_bin_exec(self) -> None:
         fake_home = self.root / "home"
-        live_core = fake_home / "Library/Application Support/Personal AI Monitor/core"
+        live_core = fake_home / "Library/Application Support/PSI/core"
         live_db = live_core / "data/activity.sqlite"
         live_conn = ensure_ready(live_db)
         live_conn.close()
@@ -1075,7 +1075,7 @@ class CoreFlowTests(CoreFixture):
 
     def test_hygiene_cleanup_purges_quarantine_only_after_grace_period(self) -> None:
         fake_home = self.root / "home"
-        quarantine_root = fake_home / "Library/Application Support/Personal AI Monitor/quarantine"
+        quarantine_root = fake_home / "Library/Application Support/PSI/quarantine"
         now = datetime(2026, 6, 8, 12, 0, tzinfo=timezone.utc)
         expired = quarantine_root / "expired"
         fresh = quarantine_root / "fresh"
@@ -2282,7 +2282,7 @@ class CoreFlowTests(CoreFixture):
         )
         mem0.chmod(0o755)
         ledger_path = fake_home / "ledger.md"
-        detail_path = fake_home / "Library/Application Support/Personal AI Monitor/memory-ledger/PAM 长期记忆详细记录.md"
+        detail_path = fake_home / "Library/Application Support/PSI/memory-ledger/PAM 长期记忆详细记录.md"
         detail_path.parent.mkdir(parents=True)
         ledger_path.write_text(
             "# PAM 长期记忆台账\n\n"
@@ -2370,7 +2370,7 @@ class CoreFlowTests(CoreFixture):
         )
         mem0.chmod(0o755)
         ledger_path = fake_home / "ledger.md"
-        detail_path = fake_home / "Library/Application Support/Personal AI Monitor/memory-ledger/PAM 长期记忆详细记录.md"
+        detail_path = fake_home / "Library/Application Support/PSI/memory-ledger/PAM 长期记忆详细记录.md"
         detail_path.parent.mkdir(parents=True)
         ledger_path.write_text("# PAM 长期记忆台账\n\n最后刷新：2026-06-13 23:00\n\n", encoding="utf-8")
         detail_path.write_text(
@@ -2451,7 +2451,7 @@ class CoreFlowTests(CoreFixture):
         )
         mem0.chmod(0o755)
         ledger_path = fake_home / "ledger.md"
-        detail_path = fake_home / "Library/Application Support/Personal AI Monitor/memory-ledger/PAM 长期记忆详细记录.md"
+        detail_path = fake_home / "Library/Application Support/PSI/memory-ledger/PAM 长期记忆详细记录.md"
         detail_path.parent.mkdir(parents=True)
         ledger_path.write_text(
             "# PAM 长期记忆台账\n\n"
@@ -2530,7 +2530,7 @@ class CoreFlowTests(CoreFixture):
         )
         mem0.chmod(0o755)
         ledger_path = fake_home / "ledger.md"
-        detail_path = fake_home / "Library/Application Support/Personal AI Monitor/memory-ledger/PAM 长期记忆详细记录.md"
+        detail_path = fake_home / "Library/Application Support/PSI/memory-ledger/PAM 长期记忆详细记录.md"
         detail_path.parent.mkdir(parents=True)
         ledger_path.write_text("# PAM 长期记忆台账\n\n最后刷新：2026-06-13 23:00\n\n1. should not update\n", encoding="utf-8")
         detail_path.write_text(
@@ -2588,7 +2588,7 @@ class CoreFlowTests(CoreFixture):
         )
         mem0.chmod(0o755)
         ledger_path = fake_home / "ledger.md"
-        detail_path = fake_home / "Library/Application Support/Personal AI Monitor/memory-ledger/PAM 长期记忆详细记录.md"
+        detail_path = fake_home / "Library/Application Support/PSI/memory-ledger/PAM 长期记忆详细记录.md"
         detail_path.parent.mkdir(parents=True)
         ledger_path.write_text(
             "# PAM 长期记忆台账\n\n"
@@ -2656,7 +2656,7 @@ class CoreFlowTests(CoreFixture):
         )
         mem0.chmod(0o755)
         ledger_path = fake_home / "Documents/Obsidian Vault/✦ AI 工作台/PAM 长期记忆台账.md"
-        detail_path = fake_home / "Library/Application Support/Personal AI Monitor/memory-ledger/PAM 长期记忆详细记录.md"
+        detail_path = fake_home / "Library/Application Support/PSI/memory-ledger/PAM 长期记忆详细记录.md"
         ledger_path.parent.mkdir(parents=True)
         detail_path.parent.mkdir(parents=True)
         ledger_path.write_text("# PAM 长期记忆台账\n\n最后刷新：2026-06-15 15:00\n\n1. PAM safe summary\n", encoding="utf-8")
@@ -2716,7 +2716,7 @@ class CoreFlowTests(CoreFixture):
         )
         mem0.chmod(0o755)
         ledger_path = fake_home / "Documents/Obsidian Vault/✦ AI 工作台/PAM 长期记忆台账.md"
-        detail_path = fake_home / "Library/Application Support/Personal AI Monitor/memory-ledger/PAM 长期记忆详细记录.md"
+        detail_path = fake_home / "Library/Application Support/PSI/memory-ledger/PAM 长期记忆详细记录.md"
         ledger_path.parent.mkdir(parents=True)
         detail_path.parent.mkdir(parents=True)
         ledger_path.write_text("# PAM 长期记忆台账\n\n最后刷新：2026-06-15 15:00\n\n1. old PAM summary\n", encoding="utf-8")
@@ -3394,7 +3394,7 @@ class CoreFlowTests(CoreFixture):
         self.assertFalse(status["destructive_actions"])
         self.assertFalse(status["rule_write_actions"])
         self.assertGreater(status["rule_counts"]["hard_block_apps"], 0)
-        live_like_root = self.root / "Library" / "Application Support" / "Personal AI Monitor" / "core" / "data"
+        live_like_root = self.root / "Library" / "Application Support" / "PSI" / "core" / "data"
         live_like_root.mkdir(parents=True)
         live_like_status = privacy_policy_status(self.conn, live_like_root)
         self.assertEqual(live_like_status["runtime_root"], "Application Support live runtime")
@@ -4559,7 +4559,7 @@ class CoreFlowTests(CoreFixture):
     def test_validate_ha_automation_checks_profile_mem0_and_runtime_without_tokens(self) -> None:
         configure_ha_automation(self.conn, self.root, enabled=True)
         fake_home = self.root / "fake-home"
-        live_root = fake_home / "Library" / "Application Support" / "Personal AI Monitor" / "core"
+        live_root = fake_home / "Library" / "Application Support" / "PSI" / "core"
         profile = fake_home / ".hermes" / "profiles" / "activity-analysis"
         feishu_profile = fake_home / ".hermes" / "profiles" / "feishubot"
         hermes = fake_home / "bin" / "hermes"
@@ -4743,7 +4743,7 @@ class CoreFlowTests(CoreFixture):
     def test_validate_quality_advice_checks_live_runtime_and_profile_without_tokens(self) -> None:
         configure_quality_advice(self.conn, self.root, enabled=True, profile="activity-quality-analysis")
         fake_home = self.root / "fake-home-quality"
-        live_root = fake_home / "Library" / "Application Support" / "Personal AI Monitor" / "core"
+        live_root = fake_home / "Library" / "Application Support" / "PSI" / "core"
         profile = fake_home / ".hermes" / "profiles" / "activity-quality-analysis"
         hermes = fake_home / "bin" / "hermes"
         live_root.mkdir(parents=True)
@@ -7935,7 +7935,7 @@ class CoreFlowTests(CoreFixture):
 
     def test_daemon_hygiene_cleanup_does_not_delete_export_cache_without_manual_apply(self) -> None:
         fake_home = self.root / "home"
-        live_core = fake_home / "Library/Application Support/Personal AI Monitor/core"
+        live_core = fake_home / "Library/Application Support/PSI/core"
         live_db = live_core / "data/activity.sqlite"
         live_conn = ensure_ready(live_db)
         try:
@@ -8293,7 +8293,7 @@ class CoreFlowTests(CoreFixture):
         ):
             status = get_status(self.conn, self.root)
         self.assertFalse(status["dev_dashboard_enabled"])
-        self.assertEqual(status["launch_agent_label"], "app.personalai.monitor.core")
+        self.assertEqual(status["launch_agent_label"], "app.psi.core")
         self.assertIsInstance(status["launch_agent_loaded"], bool)
         self.assertTrue(status["launch_agent_running"])
         self.assertEqual(status["launch_agent_pid"], "12345")
@@ -9149,7 +9149,7 @@ class CoreFlowTests(CoreFixture):
         self.assertNotIn("TimelineView", native_source)
         self.assertIn("NSStatusBar.system.statusItem", native_source)
         self.assertIn("runner.statusSnapshot.menuBarTitle(now: now)", native_source)
-        self.assertIn("NativeStatusMenu.shared.install()", app_source)
+        self.assertNotIn("NativeStatusMenu.shared.install()", app_source)
 
 
     def test_information_insufficient_cards_have_no_answer_ui(self) -> None:

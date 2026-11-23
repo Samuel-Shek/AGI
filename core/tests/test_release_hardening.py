@@ -163,7 +163,7 @@ class ReleaseHardeningTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
             home.mkdir()
-            ascii_root = home / "Library" / "Application Support" / "Personal AI Monitor" / "core"
+            ascii_root = home / "Library" / "Application Support" / "PSI" / "core"
             ascii_root.mkdir(parents=True)
 
             with patch("activity_mvp.daemon.Path.home", return_value=home):
@@ -874,10 +874,26 @@ class ReleaseHardeningTests(unittest.TestCase):
                         timeout=8,
                     )
                     elapsed = time.monotonic() - started
+                    # Keep the original wall-clock assertion, but retain the
+                    # already-returned result if it fails before payload checks.
+                    diagnostic = {
+                        "command": label,
+                        "elapsed_seconds": elapsed,
+                        "returncode": result.returncode,
+                        "stderr_present": bool(result.stderr),
+                    }
+                    try:
+                        observed_payload = json.loads(result.stdout)
+                        diagnostic["payload_is_object"] = isinstance(observed_payload, dict)
+                        if isinstance(observed_payload, dict):
+                            diagnostic["status_is_unknown"] = observed_payload.get("status") == "unknown"
+                            diagnostic["reason_is_database_busy"] = observed_payload.get("reason_code") == "database_busy"
+                    except (ValueError, TypeError):
+                        diagnostic["payload_is_json"] = False
                     self.assertLessEqual(
                         elapsed,
                         2.0 if label == "quick" else 7.0,
-                        f"{label}: {elapsed:.3f}s",
+                        json.dumps(diagnostic, sort_keys=True),
                     )
                     self.assertEqual(result.returncode, 0, f"{label}: {result.stderr}")
                     self.assertEqual(result.stderr, "", label)
@@ -1073,7 +1089,8 @@ class ReleaseHardeningTests(unittest.TestCase):
         self.assertIn("!statusSnapshot.launchAgentLoaded && !statusSnapshot.launchAgentRunning", exit_method)
         native = (Path(__file__).resolve().parents[2] / "apps/PersonalAIMonitorMenuBar/Sources/PersonalAIMonitorMenuBar/NativeStatusMenu.swift").read_text()
         self.assertIn("quit.isHidden = false", native)
-        self.assertIn("await runner.stopRecordingAndQuit()", native)
+        self.assertNotIn("await runner.stopRecordingAndQuit()", native)
+        self.assertIn('"关闭控制台"', native)
         self.assertNotIn("var snapshot = previous", production)
         self.assertNotIn("parsed.preservingMenuBarCountdown(from: statusSnapshot)", production)
         self.assertNotIn("private func unavailableSnapshot(preserving previous: StatusSnapshot)", production)

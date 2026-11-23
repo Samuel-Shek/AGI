@@ -103,6 +103,8 @@ class Store:
             self.conn.executescript(SCHEMA)
             self.set_default('schema',1)
         self.conn.row_factory=sqlite3.Row
+        from ..local_checks import Connection
+        self.conn=Connection(self.conn)
         if readonly:
             if controls_only:
                 self.conn=_ControlConnection(self.conn)
@@ -122,7 +124,9 @@ class Store:
     def tx(self):
         self.conn.execute('BEGIN IMMEDIATE')
         try:yield;self.conn.execute('COMMIT')
-        except BaseException:self.conn.execute('ROLLBACK');raise
+        except BaseException:
+            if self.conn.in_transaction:self.conn.execute('ROLLBACK')
+            raise
     def log(self,event,**details):self.conn.execute('INSERT INTO audit(event,created,details) VALUES(?,?,?)',(event,time.time(),packed(details)))
     def active(self):
         config=self.get('config',{})
@@ -181,6 +185,7 @@ class Store:
         from .jev_ranking import status as ranking_status
         autonomy['jev_ranking']=ranking_status(self)
         from .memory_coverage import status as coverage_status
+        from ..local_checks import snapshot as local_check_snapshot
         autonomy['memory_coverage']=coverage_status()
         incidents=self.rows('SELECT * FROM incidents ORDER BY updated DESC LIMIT 200')
         for r in incidents:r['status_label']=STATES.get(r['state'],'待核对')
@@ -191,6 +196,7 @@ class Store:
                 'decisions':self.rows("SELECT * FROM decisions WHERE state='pending' ORDER BY created"),
                 'budget':self.rows('SELECT kind,count(*) used FROM budget WHERE day=? AND state!=? GROUP BY kind',(day(),'cancelled')),
                 'journal':config.get('journal',''),'last_tick':self.get('last_tick'), 'last_review':self.get('last_daily'),
+                'local_checks':local_check_snapshot(self),
                 'last_weekly':self.get('last_weekly'),'last_error':self.get('last_error',''),
                 'analysis_control':{'daily_limit':None,'batch_size':ANALYSIS_BATCH_SIZE,'timeout_seconds':ANALYSIS_TIMEOUT,
                                     'next_retry_at':self.get('analysis_retry_at',0),'last_result':self.get('analysis_last_result',{})},

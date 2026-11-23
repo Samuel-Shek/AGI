@@ -108,6 +108,24 @@ def ensure_ha_automation_defaults(conn: sqlite3.Connection) -> None:
         )
 
 
+def _ensure_status_defaults(conn: sqlite3.Connection) -> None:
+    """Finish only the defaults transaction owned by this status read.
+
+    INSERT OR IGNORE still obtains a writer lock when it changes no rows.
+    Keep every normalization/guard, but release our own defaults before slow
+    dependency checks. An existing caller transaction remains its caller's.
+    """
+    own_transaction = not conn.in_transaction
+    try:
+        ensure_ha_automation_defaults(conn)
+        if own_transaction:
+            conn.commit()
+    except BaseException:
+        if own_transaction and conn.in_transaction:
+            conn.rollback()
+        raise
+
+
 def _normalize_legacy_completed_jobs(conn: sqlite3.Connection) -> int:
     cursor = conn.execute(
         """
@@ -196,7 +214,7 @@ def configure_ha_automation(
 
 
 def validate_ha_automation(conn: sqlite3.Connection, root_dir: str | Path, *, include_status: bool = True) -> dict:
-    ensure_ha_automation_defaults(conn)
+    _ensure_status_defaults(conn)
     root = Path(root_dir)
     profile = _get_setting(conn, "ha_auto_hermes_profile", DEFAULT_HA_AUTO_HERMES_PROFILE)
     hermes_bin = _hermes_executable()
@@ -272,7 +290,7 @@ def validate_ha_automation(conn: sqlite3.Connection, root_dir: str | Path, *, in
 
 
 def ha_automation_status(conn: sqlite3.Connection, root_dir: str | Path) -> dict:
-    ensure_ha_automation_defaults(conn)
+    _ensure_status_defaults(conn)
     root = Path(root_dir)
     enabled = _ha_auto_package_rollout_allowed() and _bool_setting(
         conn, "ha_auto_package_enabled", DEFAULT_HA_AUTO_ENABLED
@@ -976,7 +994,7 @@ def previous_complete_hour(now: datetime | None = None) -> tuple[str, str, str]:
 
 def is_application_support_runtime(root_dir: str | Path) -> bool:
     core = _core_root(Path(root_dir)).resolve()
-    expected = (Path.home() / "Library" / "Application Support" / "Personal AI Monitor" / "core").resolve()
+    expected = (Path.home() / "Library" / "Application Support" / "PSI" / "core").resolve()
     return core == expected
 
 

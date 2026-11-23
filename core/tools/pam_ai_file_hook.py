@@ -38,7 +38,7 @@ MAX_SESSION_BYTES = 256
 
 ROOTS_JSON = (
     Path.home()
-    / "Library/Application Support/Personal AI Monitor/core/data/document_watch_roots.json"
+    / "Library/Application Support/PSI/core/data/document_watch_roots.json"
 )
 DATABASE_PATH = ROOTS_JSON.parent / "activity.sqlite"
 DATABASE_WAL_PATH = Path(f"{DATABASE_PATH}-wal")

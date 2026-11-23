@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import CoreFoundation
 import PAMInteractionModel
 
 @MainActor
@@ -18,8 +19,52 @@ final class AttentionCenterModel: ObservableObject {
     @Published var closureOpenMessages: [String: String] = [:]
     @Published var handoffBusy: Set<String> = []
     @Published var handoffUncertain: Set<String> = []
+    private var handoffLastStatus: [String:String] = [:]
+    private var handoffUnconfirmed: Set<String> = []
     private var handoffEpochs: [String: UInt64] = [:]
     @Published var handoffDrafts = AttentionHandoffDraftCache()
+    private var draftReceipts: [String: [Int64: (PublicationDrafts.Ticket, String)]] = [:]
+    @discardableResult func stageDraft(_ id: String, content: String, revision: Int64) -> Bool {
+        guard PublicationDrafts.shared.matches("handoff." + id + "/text", fingerprint: PublicationDrafts.fingerprint(content)) else { return false }
+        let ticket = PublicationDrafts.shared.begin("handoff." + id)
+        draftReceipts[id, default: [:]][revision] = (ticket, PublicationDrafts.fingerprint(content))
+        return true
+    }
+    func reconcileDraft(_ id: String, response: [String: Any]) {
+        guard AttentionHandoffReceipt.verified(response),
+              let value = response["draft"] as? String,
+              let number = response["draft_revision"] as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID() else { return }
+        let revision = number.int64Value
+        for (expected, entry) in draftReceipts[id] ?? [:] {
+            // The existing store rejects stale revisions; a newer persisted version
+            // proves older writes can no longer overwrite the draft.
+            if revision == expected && PublicationDrafts.fingerprint(value) == entry.1 || revision > expected {
+                PublicationDrafts.shared.finish(entry.0, revision == expected ? .clean : .saveFailed)
+                draftReceipts[id]?.removeValue(forKey: expected)
+            }
+        }
+    }
+    func completeDraft(_ id: String, revision: Int64, response: [String: Any]) async {
+        if let (ticket, _) = draftReceipts[id]?[revision] {
+            PublicationDrafts.shared.finish(ticket, .unknown)
+        }
+        reconcileDraft(id, response: response)
+        if draftReceipts[id]?[revision] != nil {
+            let receipt = await command("handoff-status", id: id)
+            reconcileDraft(id, response: receipt)
+        }
+    }
+    func persistDraft(_ id: String, content: String, revision: Int64, lease: AttentionHandoffDraftCache.Lease) async {
+        guard handoffDrafts.isCurrent(lease) else { return }
+        guard stageDraft(id, content: content, revision: revision) else { return }
+        guard content.count <= 4000 else {
+            if let entry = draftReceipts[id]?.removeValue(forKey: revision) { PublicationDrafts.shared.finish(entry.0, .saveFailed) }
+            return
+        }
+        let response = await command("draft", id: id, payload: ["content":content,"draft_revision":revision])
+        await completeDraft(id, revision: revision, response: response)
+    }
     weak var runner: CoreRunner?
     private var selectionGeneration = UUID()
     private var refreshReads = AttentionRefreshReads()
@@ -40,6 +85,8 @@ final class AttentionCenterModel: ObservableObject {
         if next.displayScopeWithdrawn || scopeChanged || (!next.displayScopeRevision.isEmpty && snapshotStale) {
             close()
             handoffDrafts.withdrawAll(); closureOpenMessages = [:]
+            PublicationDrafts.shared.withdraw("handoff")
+            PublicationDrafts.shared.withdraw("attention-choice")
             snapshot = next
         } else {
             snapshot = next.retainingUnreadRows(from: snapshot)
@@ -82,21 +129,34 @@ final class AttentionCenterModel: ObservableObject {
     func handoffReadEpoch(_ id: String) -> UInt64 { handoffEpochs[id, default: 0] }
     func beginHandoff(_ id: String) -> Bool {
         guard !handoffBusy.contains(id), !handoffUncertain.contains(id) else { return false }
-        handoffBusy.insert(id); handoffEpochs[id, default: 0] += 1
+        handoffBusy.insert(id); handoffUnconfirmed.insert(id); handoffEpochs[id, default: 0] += 1
         return true
     }
     @discardableResult func finishHandoff(_ id: String, response: [String: Any]) -> Bool {
         handoffBusy.remove(id); handoffEpochs[id, default: 0] += 1
-        let verified = AttentionHandoffReceipt.verified(response)
-        if verified { handoffUncertain.remove(id) } else { handoffUncertain.insert(id) }
+        let verified = AttentionHandoffReceipt.verified(response) && response["handoff"] is [String:Any]
+        if verified {
+            handoffUncertain.remove(id); handoffUnconfirmed.remove(id)
+            handoffLastStatus[id] = (response["handoff"] as? [String:Any])?["status"] as? String
+        } else { handoffUncertain.insert(id) }
         if AttentionHandoffReceipt.sourceWithdrawn(response) { withdrawSource(id) }
         return verified
     }
     func acceptHandoffRead(_ id: String, epoch: UInt64, response: [String: Any]) -> Bool {
         if AttentionHandoffReceipt.sourceWithdrawn(response) { withdrawSource(id); return false }
         guard handoffReadEpoch(id) == epoch, !handoffBusy.contains(id) else { return false }
+        guard AttentionClosureHandoffRead.accepts(response, unconfirmedRequest:handoffUnconfirmed.contains(id), previousStatus:handoffLastStatus[id]) else {
+            handoffUncertain.insert(id); return false
+        }
         let verified = AttentionHandoffReceipt.verified(response)
-        if verified { handoffUncertain.remove(id) } else { handoffUncertain.insert(id) }
+        if verified {
+            handoffUncertain.remove(id)
+            if response["history_unknown"] as? Bool != true {
+                handoffUnconfirmed.remove(id)
+                handoffLastStatus[id] = (response["handoff"] as? [String:Any])?["status"] as? String
+            }
+            reconcileDraft(id, response: response)
+        } else { handoffUncertain.insert(id) }
         return verified
     }
     private func withdrawSource(_ id: String) {
@@ -105,6 +165,8 @@ final class AttentionCenterModel: ObservableObject {
         refreshReads.invalidate(); loading = false
         cancelReadRetry()
         handoffDrafts.withdraw(id); closureOpenMessages.removeValue(forKey: id)
+        PublicationDrafts.shared.withdraw("handoff." + id)
+        PublicationDrafts.shared.withdraw("attention-choice." + id)
         handoffEpochs[id, default: 0] += 1
         let selectedWasWithdrawn = selected.map { item in
             var selectedSnapshot = AttentionSnapshot(); selectedSnapshot.decisions = [item]
@@ -204,6 +266,14 @@ final class AttentionCenterModel: ObservableObject {
         case .unknown: actionMessage = "操作回执暂不可读取，请先核对状态；不会自动重发。"
         }
     }
+    func observeDraftReceipt(_ ticket: PublicationDrafts.Ticket, scope: String, context: AttentionPresentation, deferred: Bool = false, reviewLaterMembers: Set<String> = []) {
+        PublicationDrafts.shared.whenResolved(ticket) { [weak self] result in
+            guard let self, result == .clean else { return }
+            if PublicationDrafts.shared.isCurrent(ticket) { PublicationDrafts.shared.resetSaved(scope) }
+            self.finishSubmission(context, raw: "{\"status\":\"confirmed_by_exact_readback\"}", outcome: .recorded, deferred: deferred, reviewLaterMembers: reviewLaterMembers)
+            Task { if self.isCurrent(context) { await self.reload(context) } }
+        }
+    }
     static func object(_ raw: String) -> [String: Any]? {
         guard let data = raw.data(using: .utf8) else { return nil }
         return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -294,21 +364,21 @@ struct AttentionCenterView: View {
     }
     private var masterPane: some View {
         VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(scope.title).font(.headline)
-                Text(model.snapshotStale ? "已读 \(rows.count) 项 · 状态待核对" : "共 \(rows.count) 项")
-                    .font(.caption).foregroundStyle(.secondary)
-            }.padding(16)
-            Divider()
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    ForEach(rows) { issue in
+                    ForEach(Array(rows.enumerated()), id: \.element.id) { index, issue in
                         Button { Task { await model.select(issue, mode: .pane) } } label: {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text(issue.workbenchKindLabel + " · " + issue.workbenchStateLabel)
-                                    .font(.caption).foregroundStyle(.secondary)
-                                Text(issue.title).font(.callout.weight(.semibold)).foregroundStyle(.primary).lineLimit(2)
-                                Text(issue.workbenchExcerpt).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                            HStack(alignment: .top, spacing: 10) {
+                                Text(String(index + 1))
+                                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                                    .frame(width: 28, alignment: .trailing)
+                                    .accessibilityLabel("序号 \(index + 1)")
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text(issue.workbenchKindLabel + " · " + issue.workbenchStateLabel)
+                                        .font(.caption).foregroundStyle(.secondary)
+                                    Text(issue.title).font(.callout.weight(.semibold)).foregroundStyle(.primary).lineLimit(2)
+                                    Text(issue.workbenchExcerpt).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                                }.frame(maxWidth: .infinity, alignment: .leading)
                             }.frame(maxWidth: .infinity, alignment: .leading).padding(16)
                                 .background(model.presentation?.anchorID == issue.id ? Color.accentColor.opacity(0.13) : Color.clear)
                                 .contentShape(Rectangle())
@@ -411,19 +481,27 @@ struct AttentionDetailView: View {
     let presentationID: UUID
     var inline = false
     var pane = false
-    @State private var decisions: [String: String] = [:]
+    @RetainedDraft private var decisions: [String: String]
     @State private var batchAction = ""
     @State private var preview: [String: Any] = [:]
     @State private var message = ""
     @State private var busy = false
     @State private var bodyRequest: MemoryBodyRequest?
-    @State private var activityChoice = ""
-    @State private var workstream = ""
+    @RetainedDraft private var activityChoice: String
+    @RetainedDraft private var workstream: String
+    private let draftScope: String
+
+    init(model: AttentionCenterModel, runner: CoreRunner, presentationID: UUID, inline: Bool = false, pane: Bool = false) {
+        self.model = model; self.runner = runner; self.presentationID = presentationID
+        self.inline = inline; self.pane = pane
+        draftScope = "attention-choice." + (model.presentation?.issueID ?? presentationID.uuidString)
+        _decisions = RetainedDraft(wrappedValue: [:], draftScope, "decisions")
+        _activityChoice = RetainedDraft(wrappedValue: "", draftScope, "answer")
+        _workstream = RetainedDraft(wrappedValue: "", draftScope, "workstream")
+    }
     @State private var completed = false
-    @State private var closureChoiceToken = ""
     @State private var closureChoiceGeneration = UUID()
     @State private var closureChoiceLoading = false
-    @State private var closureChoiceError = ""
     private var context: AttentionPresentation? { model.presentation?.id == presentationID ? model.presentation : nil }
     var issue: AttentionIssue? { context == nil ? nil : model.selected }
 
@@ -441,12 +519,8 @@ struct AttentionDetailView: View {
         .onChange(of: model.detailReadID) { _, _ in resetChoices(clearMessage: false) }
         .onChange(of: issue?.revision) { _, _ in resetChoices(clearMessage: false) }
         .onChange(of: issue?.id) { _, _ in resetChoices() }
-        .task(id: "\(presentationID):\(issue?.revision ?? ""): \(model.detailReadID):\(model.detailLoading):\(model.detailMessage):\(model.loading):\(model.snapshotStale):\(busy)") {
-            if let issue, issue.kind == "closure", issue.closureState == "decision", !interactionDisabled {
-                await loadClosureChoices(issue)
-            }
-        }
         .onDisappear {
+            closureChoiceGeneration = UUID()
             guard !pane, model.presentation?.id == presentationID else { return }
             runner.clearRevealedMemory(); model.close(presentationID: presentationID)
         }
@@ -486,6 +560,32 @@ struct AttentionDetailView: View {
                         detailBlock("现在是否在执行", issue.runtimeLabel(at: timeline.date))
                     }
                     detailBlock("恢复安排", issue.closureRecoveryLabel)
+                    DisclosureGroup("处理链路与结果") {
+                        if let trace = issue.closureTrace {
+                            VStack(alignment: .leading, spacing: 10) {
+                                TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                                    Text("本次核对：" + (trace.state == "running" ? issue.runtimeLabel(at: timeline.date) : trace.label))
+                                }
+                                ForEach(trace.events) { event in
+                                    HStack(alignment: .top) {
+                                        Text(event.at.map { Date(timeIntervalSince1970: $0).formatted(date: .abbreviated, time: .shortened) } ?? "时间未知")
+                                            .foregroundStyle(.secondary)
+                                        Text(event.label)
+                                    }.font(.callout)
+                                }
+                                if trace.truncated { Text("显示最近 200 条记录，统计仍覆盖该事项全部事件。").font(.caption) }
+                                Text("本人明确决定 \(trace.decisions.map(String.init) ?? "未知") 次 · 重复登记 \(trace.duplicates.map(String.init) ?? "未知") 次 · 通知请求 \(trace.notifications.map(String.init) ?? "未知") 次")
+                                    .font(.callout)
+                                if let seconds = trace.elapsedSeconds {
+                                    Text("登记至本次验收：\(Int(seconds)) 秒").font(.callout)
+                                }
+                                Text("已接收不代表完成；通知请求不代表本人已看到。催办次数、实际看到通知及费用尚无证据。")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }.padding(.top, 8)
+                        } else {
+                            Text("处理链路暂不可读取，请重新核对。").foregroundStyle(.secondary)
+                        }
+                    }
                 }
                 detailBlock("为什么需要核对", issue.reason)
                 detailBlock("对你的影响", issue.impact)
@@ -518,12 +618,7 @@ struct AttentionDetailView: View {
                 if issue.kind == "closure" {
                     if issue.closureState == "decision" {
                         if closureChoiceLoading { ProgressView("正在读取本次决定选项…") }
-                        if !closureChoiceError.isEmpty {
-                            Text(closureChoiceError).foregroundStyle(.orange)
-                            Button("重新读取详情及选项") { if let context { Task { await model.reload(context) } } }
-                                .disabled(interactionDisabled || closureChoiceLoading)
-                        }
-                        if !closureChoiceToken.isEmpty {
+                        if issue.closureState == "decision" {
                             VStack(alignment: .leading, spacing: 10) {
                                 Text("仅适用于上方建议与当前范围。费用、新账号权限和对外操作仍需具体核对。")
                                     .font(.callout).foregroundStyle(.secondary)
@@ -559,6 +654,10 @@ struct AttentionDetailView: View {
                     }
                 }
                 if !message.isEmpty { Text(message).font(.callout).textSelection(.enabled) }
+                if issue.kind == "activity" || issue.kind == "memory" {
+                    Button("放弃未提交的选择和备注") { PublicationDrafts.shared.discard(draftScope); preview = [:] }
+                        .disabled(busy)
+                }
                 if !completed && issue.kind != "feedback" && issue.kind != "closure" {
                     Divider()
                     CodexHandoffComposer(model: model, issueID: issue.id, presentationID: presentationID).id(issue.id)
@@ -569,26 +668,14 @@ struct AttentionDetailView: View {
     private func resetChoices(clearMessage: Bool = true) {
         bodyRequest = nil
         if context != nil { runner.clearRevealedMemory() }
-        decisions = [:]; preview = [:]; batchAction = ""; activityChoice = ""; workstream = ""; completed = false
-        closureChoiceToken = ""; closureChoiceGeneration = UUID(); closureChoiceLoading = false; closureChoiceError = ""
+        // Reads invalidate previews, never the owner's pending input.
+        preview = [:]; batchAction = ""; completed = false
+        closureChoiceGeneration = UUID(); closureChoiceLoading = false
         if clearMessage { message = "" }
-    }
-    private func loadClosureChoices(_ issue: AttentionIssue) async {
-        guard let context, context.matches(issueID: issue.id, revision: issue.revision), model.isCurrent(context), !interactionDisabled, !closureChoiceLoading, closureChoiceToken.isEmpty else { return }
-        let generation = closureChoiceGeneration, readID = model.detailReadID
-        closureChoiceLoading = true; closureChoiceError = ""
-        let id = String(issue.id.dropFirst("closure:".count))
-        let raw = await runner.runCore(["task-closure", "choice-preview", "--id", id])
-        guard generation == closureChoiceGeneration, readID == model.detailReadID, model.isCurrent(context) else { return }
-        closureChoiceLoading = false
-        if let result = AttentionCenterModel.object(raw), result["issue_id"] as? String == id,
-           result["revision"] as? Int == Int(issue.revision), result["default"] is NSNull,
-           let token = result["token"] as? String, !token.isEmpty {
-            closureChoiceToken = token
-        } else { closureChoiceToken = ""; closureChoiceError = "决定选项暂不可读取，或事项已变化。请重新读取。" }
     }
     private func refreshCurrent(_ context: AttentionPresentation) async {
         guard model.isCurrent(context) else { return }
+        await PublicationDrafts.shared.retry(draftScope)
         await model.refresh()
     }
     private func reconcileCurrent(_ context: AttentionPresentation, _ issue: AttentionIssue) async {
@@ -599,18 +686,20 @@ struct AttentionDetailView: View {
         await refreshCurrent(context)
     }
     private func closureChoice(_ choice: String, _ issue: AttentionIssue) async {
-        guard let context, context.matches(issueID: issue.id, revision: issue.revision), !closureChoiceToken.isEmpty, !interactionDisabled, model.beginSubmission(context) else { return }
-        let token = closureChoiceToken; closureChoiceToken = ""
-        busy = true; defer { busy = false }
-        let data = try? JSONSerialization.data(withJSONObject: ["token": token, "issue_id": String(issue.id.dropFirst("closure:".count)), "revision": Int(issue.revision) ?? -1, "choice": choice])
-        let input = data.flatMap { String(data: $0, encoding: .utf8) }
-        let raw = await runner.runCore(["task-closure", "decide"], standardInput: input)
-        let outcome = AttentionWriteOutcome.closure(AttentionCenterModel.object(raw), id: String(issue.id.dropFirst("closure:".count)), revision: issue.revision)
-        model.finishSubmission(context, raw: raw, outcome: outcome)
+        guard let context, context.matches(issueID: issue.id, revision: issue.revision), !interactionDisabled, model.beginSubmission(context) else { return }
+        let generation = closureChoiceGeneration, readID = model.detailReadID
+        let id = String(issue.id.dropFirst("closure:".count))
+        busy = true; closureChoiceLoading = true
+        defer { busy = false; closureChoiceLoading = false }
+        let result = await AttentionClosureChoice.submit(id: id, revision: issue.revision, choice: choice,
+            current: { !Task.isCancelled && generation == closureChoiceGeneration && readID == model.detailReadID && model.canInteract(context) },
+            preview: { await runner.runCore(["task-closure", "choice-preview", "--id", id]) },
+            decide: { await runner.runCore(["task-closure", "decide"], standardInput: $0) })
+        model.finishSubmission(context, raw: result.raw, outcome: result.outcome)
         guard model.isCurrent(context) else { return }
-        switch outcome {
+        switch result.outcome {
         case .recorded: message = "已记录本次选择；实际处理进度以重新读取后的状态为准。"
-        case .rejected: message = "本次选择未执行。事项或依据已变化，请重新查看后选择。"
+        case .rejected: message = "本次选择未提交或未执行。事项或依据已变化，请重新查看后选择。"
         case .unknown: message = "选择回执暂不可读取，请先核对状态；不会自动重发。"
         }
         await refreshCurrent(context)
@@ -687,7 +776,7 @@ struct AttentionDetailView: View {
     }
     private func payload(_ issue: AttentionIssue) -> [String: Any] {
         ["issue_id":issue.id, "revision":issue.revision, "batch_action":!batchAction.isEmpty,
-         "decisions": decisions.keys.sorted().map { ["memory_id":$0, "action":decisions[$0]!, "note":"AGI 决策详情"] }]
+         "decisions": decisions.keys.sorted().map { ["memory_id":$0, "action":decisions[$0]!, "note":"PSI 决策详情"] }]
     }
     private func previewChoices(_ issue: AttentionIssue) async {
         guard let context, context.matches(issueID: issue.id, revision: issue.revision), !interactionDisabled else { return }
@@ -707,18 +796,33 @@ struct AttentionDetailView: View {
         busy = true; defer { busy = false }
         let submittedChoices = decisions
         var value = payload(issue); value["confirm_digest"] = token
+        let ticket = PublicationDrafts.shared.begin(draftScope)
         let response = await model.commandResult("apply", payload: value)
         let result = response.value, raw = response.raw
-        let outcome = AttentionWriteOutcome.memory(result)
+        let baseOutcome = AttentionWriteOutcome.memory(result)
+        let complete = result["raw_access"] as? Bool == false &&
+            (result["applied_count"] as? Int ?? -1) + (result["unchanged_count"] as? Int ?? 0) == submittedChoices.count
+        let outcome: AttentionWriteOutcome = baseOutcome == .recorded && !complete ? .unknown : baseOutcome
+        let draftCurrent = PublicationDrafts.shared.isCurrent(ticket)
+        PublicationDrafts.shared.finish(ticket, outcome == .recorded ? .clean : outcome == .rejected ? .saveFailed : .unknown)
+        if outcome == .recorded && draftCurrent { PublicationDrafts.shared.resetSaved(draftScope) }
+        if outcome == .unknown {
+            let versions = Dictionary(uniqueKeysWithValues: issue.members.compactMap { member in member.publicationVersion.map { (member.id, $0) } })
+            await PublicationDrafts.shared.verify(ticket) { await runner.memoryReviewReceipt(submittedChoices, versions: versions) }
+        }
         let repeatableLater = outcome == .recorded && result["applied_count"] as? Int == 0 &&
             result["unchanged_count"] as? Int == submittedChoices.count && submittedChoices.values.allSatisfy { $0 == "review_later" }
         model.finishSubmission(context, raw: raw, outcome: outcome,
             reviewLaterMembers: repeatableLater ? Set(submittedChoices.keys) : [])
+        if outcome == .unknown {
+            model.observeDraftReceipt(ticket, scope: draftScope, context: context,
+                reviewLaterMembers: submittedChoices.values.allSatisfy { $0 == "review_later" } ? Set(submittedChoices.keys) : [])
+        }
         guard model.isCurrent(context) else { return }
         preview = [:]
         if outcome == .rejected { message = "本次修改未执行，重新核对后请再次预览。"; await refreshCurrent(context) }
         else if outcome == .recorded {
-            message = "处理结果已写入，正在核对最新状态。"; decisions = [:]
+            message = "处理结果已写入，正在核对最新状态。"
             await runner.refreshMemoryReview(force: true)
             guard model.isCurrent(context) else { return }
             await model.refresh()
@@ -752,13 +856,22 @@ struct AttentionDetailView: View {
                         guard let context, context.matches(issueID: issue.id, revision: issue.revision), !interactionDisabled, model.beginSubmission(context) else { return }
                         busy = true; defer { busy = false }
                         let submittedAnswer = activityChoice, submittedWorkstream = workstream
+                        let ticket = PublicationDrafts.shared.begin(draftScope)
                         let input = try? JSONSerialization.data(withJSONObject: ["workstream":submittedWorkstream,"outcome":"unknown","note":""])
                         let raw = await runner.runCore(["activity-confirmation","answer-group","--group-key",issue.groupKey,
                             "--member-revision",issue.revision,"--answer",submittedAnswer,"--details-stdin"],
                             standardInput: input.flatMap { String(data: $0, encoding: .utf8) })
                         let result = AttentionCenterModel.object(raw)
                         let outcome = AttentionWriteOutcome.activity(result, groupKey: issue.groupKey)
+                        let draftCurrent = PublicationDrafts.shared.isCurrent(ticket)
+                        PublicationDrafts.shared.finish(ticket, outcome == .recorded ? .clean : outcome == .rejected ? .saveFailed : .unknown)
+                        if outcome == .recorded && draftCurrent { PublicationDrafts.shared.resetSaved(draftScope) }
+                        if outcome == .unknown {
+                            await runner.verifyActivityForm(ticket, payload: ["group_key":issue.groupKey, "member_revision":issue.revision,
+                                "purpose":"answer", "answer":submittedAnswer, "workstream":submittedWorkstream, "outcome":"unknown", "note":""])
+                        }
                         model.finishSubmission(context, raw: raw, outcome: outcome, deferred: submittedAnswer == "defer")
+                        if outcome == .unknown { model.observeDraftReceipt(ticket, scope: draftScope, context: context, deferred: submittedAnswer == "defer") }
                         guard model.isCurrent(context) else { return }
                         switch outcome {
                         case .recorded: message = "本次判断已记录，请以最新事项状态为准。"
@@ -788,6 +901,7 @@ struct CodexHandoffComposer: View {
     @State private var result: [String: Any] = [:]
     @State private var error = ""
     @State private var draftSaveTask: Task<Void, Never>?
+    @State private var draftNeedsFlush = false
     @State private var draftRevision: Int64 = 0
     @State private var draftLease: AttentionHandoffDraftCache.Lease?
     private var draftSourceCurrent: Bool { draftLease.map(model.handoffDrafts.isCurrent) ?? false }
@@ -824,6 +938,10 @@ struct CodexHandoffComposer: View {
                       systemImage: status == "delivered" ? "checkmark.circle" : "arrow.up.right.square")
                     .font(.callout.weight(.medium))
                 if let message = handoff["error"] as? String, !message.isEmpty { Text(message).font(.callout) }
+            }
+            if closure && result["history_unknown"] as? Bool == true {
+                Text("未找到本机交接记录，历史状态尚未核实；发送只会发起新的只读核查，不恢复或重发原任务。")
+                    .font(.callout).foregroundStyle(.secondary)
             }
             if !error.isEmpty { Text(error).font(.callout).foregroundStyle(.orange) }
             if let verification = handoff["verification"] as? [String: Any], let message = verification["message"] as? String {
@@ -888,7 +1006,7 @@ struct CodexHandoffComposer: View {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
                 guard !Task.isCancelled else { break }
-                if !loaded || active || statusUnreadable || model.handoffBusy.contains(issueID) || model.handoffUncertain.contains(issueID) {
+                if !loaded || active || statusUnreadable || model.handoffBusy.contains(issueID) || model.handoffUncertain.contains(issueID) || PublicationDrafts.shared.needsReadback("handoff." + issueID) {
                     let readEpoch = model.handoffReadEpoch(issueID)
                     let response = await model.command("handoff-status", id: issueID)
                     guard !Task.isCancelled, current(bound) else { return }
@@ -911,11 +1029,13 @@ struct CodexHandoffComposer: View {
         .onDisappear {
             draftSaveTask?.cancel()
             let draft = text
+            guard draftNeedsFlush else { return }
+            draftNeedsFlush = false
             let revision = nextDraftRevision()
             if loaded, let lease = draftLease, model.handoffDrafts.save(draft, revision: revision, using: lease) {
                 Task {
                     guard model.handoffDrafts.isCurrent(lease) else { return }
-                    _ = await model.command("draft", id: issueID, payload: ["content":draft,"draft_revision":revision])
+                    await model.persistDraft(issueID, content: draft, revision: revision, lease: lease)
                 }
             } else if !draftSourceCurrent {
                 clearWithdrawnHandoff()
@@ -942,27 +1062,34 @@ struct CodexHandoffComposer: View {
     private func restoreDraft(_ response: [String: Any]) {
         guard let lease = draftLease, model.handoffDrafts.isCurrent(lease) else { clearWithdrawnHandoff(); return }
         let serverRevision = (response["draft_revision"] as? NSNumber)?.int64Value ?? 0
+        let persisted = response["draft"] as? String ?? ""
+        PublicationDrafts.shared.initialize("handoff." + issueID + "/text", value: persisted)
         if let cached = model.handoffDrafts.draft(using: lease), cached.revision >= serverRevision {
             text = cached.text; draftRevision = max(draftRevision, cached.revision)
         } else {
-            text = response["draft"] as? String ?? ""; draftRevision = max(draftRevision, serverRevision)
+            text = persisted; draftRevision = max(draftRevision, serverRevision)
         }
+        PublicationDrafts.shared.update("handoff." + issueID + "/text", initial: persisted, value: text)
+        model.reconcileDraft(issueID, response: response)
     }
     private func saveDraft(_ value: String) {
         guard loaded, let lease = draftLease, model.handoffDrafts.isCurrent(lease) else { return }
         draftSaveTask?.cancel()
+        PublicationDrafts.shared.update("handoff." + issueID + "/text", initial: "", value: value)
         let revision = nextDraftRevision()
         // Cache synchronously before a quick A -> B -> A navigation can read the
         // older server draft. Delayed disk saves retain the same monotonic version.
         guard model.handoffDrafts.save(value, revision: revision, using: lease) else { return }
+        draftNeedsFlush = true
         draftSaveTask = Task {
             try? await Task.sleep(nanoseconds: 400_000_000)
             guard !Task.isCancelled, model.handoffDrafts.isCurrent(lease) else { return }
-            _ = await model.command("draft", id: issueID, payload: ["content":value,"draft_revision":revision])
+            draftNeedsFlush = false
+            await model.persistDraft(issueID, content: value, revision: revision, lease: lease)
         }
     }
     private func clearWithdrawnHandoff() {
-        draftSaveTask?.cancel(); draftSaveTask = nil
+        draftSaveTask?.cancel(); draftSaveTask = nil; draftNeedsFlush = false
         text = ""; submittedText = ""; result = [:]; draftRevision = 0
         loaded = false; statusUnreadable = true; error = "资料范围已变化，请重新读取事项。"
     }
@@ -980,13 +1107,16 @@ struct CodexHandoffComposer: View {
         if submittedText != text || currentRequestDelivered {
             messageID = UUID().uuidString.lowercased(); submittedText = text
         }
-        draftSaveTask?.cancel()
-        var payload: [String: Any] = ["content":text,"client_message_id":messageID,"draft_revision":nextDraftRevision(),"issue_revision":bound.revision]
+        draftSaveTask?.cancel(); draftNeedsFlush = false
+        let submittedRevision = nextDraftRevision()
+        guard model.stageDraft(issueID, content: text, revision: submittedRevision) else { return }
+        var payload: [String: Any] = ["content":text,"client_message_id":messageID,"draft_revision":submittedRevision,"issue_revision":bound.revision]
         if assistance {
             payload["assistance_token"] = issue.closureAssistanceToken
             payload["origin_thread_id"] = issue.closureThreadID
         }
         let response = await model.command("handoff-submit", id: issueID, payload: payload)
+        await model.completeDraft(issueID, revision: submittedRevision, response: response)
         model.finishHandoff(issueID, response: response)
         guard current(bound) else { return }
         _ = receiveHandoff(response)
@@ -1066,7 +1196,12 @@ struct MemoryBodySheet: View {
     @ObservedObject var attention: AttentionCenterModel
     let request: MemoryBodyRequest
     @Environment(\.dismiss) private var dismiss
-    @State private var choice = ""
+    @RetainedDraft private var choice: String
+    private var draftScope: String { "memory-body-choice." + request.memoryID }
+    init(runner: CoreRunner, attention: AttentionCenterModel, request: MemoryBodyRequest) {
+        self.runner = runner; self.attention = attention; self.request = request
+        _choice = RetainedDraft(wrappedValue: "", "memory-body-choice." + request.memoryID, "choice")
+    }
     @State private var message = ""
     private var ownsReveal: Bool { runner.memoryRevealSession.presentationID == request.id }
     var body: some View {
@@ -1112,12 +1247,16 @@ struct MemoryBodySheet: View {
                             Text(choice == "keep_active" ? "允许 AI 调用当前版本；原记录保留。" : "AI 不再自动调用；原记录保留。")
                                 .font(.caption).foregroundStyle(.secondary)
                             HStack {
+                                Button("放弃未提交的选择") { PublicationDrafts.shared.discard(draftScope) }
                                 Button("预览影响") { Task { await runner.previewMemoryReviewDecisions([runner.memoryRevealSession.identifier:choice]) } }
                                 if runner.memoryReviewPreview.isReady {
                                     Button("确认修改") {
                                         Task {
-                                            if await runner.applyMemoryReviewDecisions([runner.memoryRevealSession.identifier:choice]) {
-                                                message = "处理结果已写入。"; choice = ""; await attention.refresh()
+                                            if PublicationDrafts.shared.needsReadback(draftScope) { await PublicationDrafts.shared.retry(draftScope); return }
+                                            let ticket = PublicationDrafts.shared.begin(draftScope)
+                                            if await runner.applyMemoryReviewDecisions([request.memoryID:choice], ticket: ticket) {
+                                                if PublicationDrafts.shared.isCurrent(ticket) { PublicationDrafts.shared.resetSaved(draftScope) }
+                                                message = "处理结果已写入。"; await attention.refresh()
                                             } else { message = runner.memoryReviewMessage }
                                         }
                                     }.buttonStyle(.borderedProminent)
@@ -1132,11 +1271,12 @@ struct MemoryBodySheet: View {
         }.padding(24).frame(minWidth: 560, idealWidth: 680, minHeight: 460, idealHeight: 620)
             .task(id: request.id) {
                 guard !Task.isCancelled else { return }
+                await PublicationDrafts.shared.retry(draftScope)
                 await runner.revealMemory(request.memoryID, presentationID: request.id)
             }
             .onChange(of: choice) { _, _ in runner.memoryReviewPreview = MemoryReviewPreview() }
             .onChange(of: runner.memoryRevealSession.identifier) { old, new in
-                choice = ""; runner.memoryReviewPreview = MemoryReviewPreview()
+                runner.memoryReviewPreview = MemoryReviewPreview()
                 if !old.isEmpty && new.isEmpty && runner.memoryRevealSession.identifier.isEmpty { dismiss() }
             }
             .onChange(of: runner.memoryRevealSession.presentationID) { _, current in

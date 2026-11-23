@@ -31,13 +31,18 @@ struct PersonalAIMonitorMenuBarApp: App {
                     Button("设置…") { AppWindowPresenter.shared.showRegistered(tab: .settings) }
                         .keyboardShortcut(",", modifiers: .command)
                 }
-                CommandMenu("AGI") {
-                    Button("打开记录菜单") { NativeStatusMenu.shared.showMenu() }
+                CommandMenu("PSI") {
+                    Button("打开事项工作台") { AppWindowPresenter.shared.showRegistered(tab: .workbench) }
+                    Button("打开控制台") { AppWindowPresenter.shared.showRegistered() }
                         .keyboardShortcut("m", modifiers: [.command, .shift])
                     Button("给 Codex 的上下文…") {
                         CodexSharingWindow.shared.show(runner: runner)
                     }
                         .keyboardShortcut("c", modifiers: [.command, .shift])
+                }
+                CommandGroup(replacing: .appTermination) {
+                    Button("关闭控制台") { NSApp.terminate(nil) }
+                        .keyboardShortcut("q", modifiers: [.command])
                 }
             }
     }
@@ -45,26 +50,65 @@ struct PersonalAIMonitorMenuBarApp: App {
 
 PersonalAIMonitorMenuBarApp.main()
 
+extension IdlePublicationCoordinator {
+    static let shared = IdlePublicationCoordinator(workbenchHasPendingInput: {
+        IssueWorkbenchService.shared.hasPendingDraftOrHandoff
+    })
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillTerminate(_ notification: Notification) {
+        IssueWorkbenchService.shared.stop()
+    }
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let bundle = Bundle.main.bundleIdentifier,
            let existing = NSRunningApplication.runningApplications(withBundleIdentifier: bundle)
                 .first(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier && !$0.isTerminated }) {
-            existing.activate(options: [])
+            if !CommandLine.arguments.contains("--background-maintenance") {
+                existing.activate(options: [])
+            }
             NSApp.terminate(nil)
             return
         }
         AppIconInstaller.apply()
-        NativeStatusMenu.shared.install()
         IdlePublicationCoordinator.shared.start()
-        if !CommandLine.arguments.contains("--background-maintenance") {
+        LocalNotificationCoordinator.shared.stopRoutineSchedules()
+        if CommandLine.arguments.contains("--background-maintenance") {
+            NSApp.setActivationPolicy(.accessory)
+        } else {
             AppWindowPresenter.shared.showRegistered(tab: .today)
         }
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        return IssueWorkbenchService.shared.terminationReply(
+            automatic: IdlePublicationCoordinator.shared.hasPublicationRequest,
+            nativeDecision: { self.checkNativeTermination() },
+            reply: { sender.reply(toApplicationShouldTerminate: $0) }
+        )
+    }
+
+    private func checkNativeTermination() -> NSApplication.TerminateReply {
+        let coordinator = IdlePublicationCoordinator.shared
+        let publicationExit = coordinator.hasPublicationRequest
+        let reply = coordinator.shouldTerminate()
+        if reply == .terminateCancel && !publicationExit {
+            let alert = NSAlert()
+            alert.messageText = "内容尚未安全保存"
+            alert.informativeText = "请完成保存、核对原保存结果，或在原表单明确放弃修改后，再关闭控制台。后台服务继续运行。"
+            alert.addButton(withTitle: "返回编辑")
+            alert.runModal()
+        }
+        return reply
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        IdlePublicationCoordinator.shared.userInteraction()
+        // LaunchServices activates an explicit user open before this callback.
+        // A background `open -gj` of an existing instance must not create UI.
+        guard ConsoleLaunchIntent.shouldShowOnReopen(
+            isActive: sender.isActive, event: NSAppleEventManager.shared().currentAppleEvent
+        ) else { return false }
         AppWindowPresenter.shared.showRegistered()
         return true
     }
@@ -84,6 +128,10 @@ final class LocalNotificationCoordinator {
     private var anomalyGeneration = 0
     private var phase2Enabled: Bool {
         ContextConsolePhase2FeatureFlag.isEnabled(in: defaults)
+    }
+
+    func stopRoutineSchedules() {
+        clearPendingSchedules()
     }
 
     func update(
@@ -174,7 +222,7 @@ final class LocalNotificationCoordinator {
             else { return }
             center.removePendingNotificationRequests(withIdentifiers: [anomalyIdentifier])
             let content = UNMutableNotificationContent()
-            content.title = "AGI 需要检查"
+            content.title = "PSI 需要检查"
             content.body = "系统状态持续异常，请打开 PAM 查看详情。"
             content.sound = .default
             let request = UNNotificationRequest(
@@ -455,7 +503,6 @@ final class AppWindowPresenter {
     }
 
     func show(runner: CoreRunner, tab: AppTab = .today) {
-        IdlePublicationCoordinator.shared.userInteraction()
         register(runner: runner)
         windowState.selectedTab = tab
         if window == nil {
@@ -468,7 +515,7 @@ final class AppWindowPresenter {
                 backing: .buffered,
                 defer: false
             )
-            newWindow.title = "AGI"
+            newWindow.title = "PSI"
             let container = NSViewController()
             container.view = NSView(frame: newWindow.contentLayoutRect)
             container.addChild(controller)
@@ -485,6 +532,9 @@ final class AppWindowPresenter {
             ])
             newWindow.miniwindowImage = AppIconInstaller.appIconImage()
             newWindow.isReleasedWhenClosed = false
+            let workbench = IssueWorkbenchService.shared
+            newWindow.delegate = workbench
+            workbench.showBlockedWorkbench = { [weak self] in self?.windowState.selectedTab = .workbench }
             let toolbarDelegate = AppWindowToolbar(state: windowState)
             let toolbar = NSToolbar(identifier: "AGI.main")
             toolbar.delegate = toolbarDelegate
@@ -502,7 +552,8 @@ final class AppWindowPresenter {
                 object: newWindow,
                 queue: .main
             ) { _ in
-                Task { @MainActor in
+                MainActor.assumeIsolated {
+                    IssueWorkbenchService.shared.stop()
                     AppWindowPresenter.shared.runner?.setControlWindowVisible(false)
                     NSApp.setActivationPolicy(.accessory)
                 }
@@ -548,10 +599,9 @@ final class AppWindowPresenter {
         // 窗口关闭时由 willCloseNotification 切回 .accessory，恢复纯菜单栏形态。
         NSApp.setActivationPolicy(.regular)
         runner.setControlWindowVisible(true)
+        if tab == .workbench { IssueWorkbenchService.shared.activate() }
         if tab == .confirmations {
             Task { await runner.refreshActivityConfirmationsIfNeeded() }
-        } else if tab == .fileHistory {
-            Task { await runner.refreshFileHistory(range: "today") }
         }
         window?.deminiaturize(nil)
         window?.makeKeyAndOrderFront(nil)
@@ -595,10 +645,11 @@ struct ContentView: View {
     @ObservedObject private var feedback = FeedbackModel.shared
     @ObservedObject private var evolution = EvolutionModel.shared
     @State private var todayRefreshRequested = false
+    @State private var launchStatusPending = true
     @State private var recordsMode = 0
     @State private var settingsMode = 0
     @AppStorage("agi.appearance") private var appearance = "system"
-    @State private var memoryReviewDrafts: [String: String] = [:]
+    @RetainedDraft("memory-review", "choices") private var memoryReviewDrafts: [String: String] = [:]
     @State private var memoryReviewShowDecided = false
     @State private var fileHistoryRange = "today"
     @State private var fileHistoryUnknownExpanded = false
@@ -620,9 +671,17 @@ struct ContentView: View {
                 applyRangePreset(.last60, refresh: false)
             }
             attention.connect(runner)
+            // Feedback and evolution status are read alongside the status read so the
+            // Today cards do not wait for it; they stay hidden until status is known.
             async let statusRead: Void = runner.refreshStatus()
             async let attentionRead: Void = attention.refresh(coalescingIfLoading: true)
-            _ = await (statusRead, attentionRead)
+            async let feedbackRead: Void = feedback.refresh(runner)
+            async let evolutionRead = evolution.perform(.status, runner: runner)
+            await statusRead
+            // A fail-closed "unknown" first result causes no status change; the later
+            // recovery must re-read attention, so the launch skip ends here.
+            if runner.statusSnapshot.status == "unknown" { launchStatusPending = false }
+            _ = await (attentionRead, feedbackRead, evolutionRead)
         }
         .sheet(item: attentionSheetBinding) { context in
             AttentionDetailView(model: attention, runner: runner, presentationID: context.id)
@@ -645,6 +704,11 @@ struct ContentView: View {
         .onChange(of: runner.statusSnapshot.status) { previous, status in
             if status == "locked" || status == "session_state_unknown" { runner.clearRevealedMemory(); attention.close() }
             let safetyTransition = [previous, status].contains { $0 == "locked" || $0 == "session_state_unknown" }
+            // Only the first status result after launch skips the second full read, and
+            // only when the startup attention read is still running or returned a current snapshot.
+            let launchResult = launchStatusPending && previous == "unknown"
+            launchStatusPending = false
+            if launchResult && !safetyTransition && (attention.loading || !attention.snapshotStale) { return }
             Task { await attention.refresh(coalescingIfLoading: !safetyTransition) }
         }
         .onChange(of: windowState.selectedTab) { _, tab in
@@ -655,8 +719,6 @@ struct ContentView: View {
                 Task { await runner.refreshStatus() }
             case .confirmations:
                 Task { await runner.refreshActivityConfirmationsIfNeeded() }
-            case .fileHistory:
-                Task { await runner.refreshFileHistory(range: fileHistoryRange) }
             case .review:
                 refreshReviewContent()
             case .memoryReview:
@@ -671,7 +733,7 @@ struct ContentView: View {
                     await runner.refreshPrivacyPolicyStatus()
                     await runner.refreshDocumentChangesStatus()
                 }
-            case .settings, .evolution, .reflection:
+            case .fileHistory, .settings, .evolution, .reflection, .workbench:
                 break
             }
         }
@@ -766,7 +828,9 @@ struct ContentView: View {
 
     @ViewBuilder
     private var selectedTabView: some View {
-        if windowState.selectedTab == .evolution {
+        if windowState.selectedTab == .workbench {
+            IssueWorkbenchView().onAppear { IssueWorkbenchService.shared.activate() }
+        } else if windowState.selectedTab == .evolution {
             EvolutionView(runner: runner, focusFeedback: windowState.evolutionFocusFeedback)
         } else if windowState.selectedTab == .reflection {
             ReflectionView(runner: runner)
@@ -792,6 +856,8 @@ struct ContentView: View {
                 overviewTab
             case .privacy:
                 privacyAndDataTab
+            case .workbench:
+                IssueWorkbenchView().onAppear { IssueWorkbenchService.shared.activate() }
             case .settings:
                 settingsContainer
             case .evolution:
@@ -804,7 +870,7 @@ struct ContentView: View {
         HStack(spacing: 14) {
             LogoMark(size: 38)
             VStack(alignment: .leading, spacing: 4) {
-                Text("AGI")
+                Text("PSI")
                     .font(.title3.weight(.semibold))
                 Text("个人 AI 工作系统")
                     .foregroundStyle(.secondary)
@@ -947,7 +1013,7 @@ struct ContentView: View {
                     confirmedActivityQuietSection
                 }
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("AGI 的工作状态").font(.title3.weight(.semibold))
+                    Text("PSI 的工作状态").font(.title3.weight(.semibold))
                     ReflectionTodayCard(runner: runner) { windowState.selectedTab = .reflection }
                     FeedbackTodayCard(runner: runner) { windowState.evolutionFocusFeedback = true; windowState.selectedTab = .evolution }
                     EvolutionTodayCard(runner: runner) { windowState.evolutionFocusFeedback = false; windowState.selectedTab = .evolution }
@@ -1669,7 +1735,7 @@ struct ContentView: View {
         ) {
             HStack(spacing: 8) {
                 Button("清空选择") {
-                    memoryReviewDrafts.removeAll()
+                    PublicationDrafts.shared.discard("memory-review")
                     runner.memoryReviewPreview = MemoryReviewPreview()
                 }
                 .disabled(runner.memoryReviewLoading)
@@ -1679,9 +1745,11 @@ struct ContentView: View {
                 .disabled(runner.memoryReviewLoading)
                 Button("确认写入") {
                     Task {
-                        if await runner.applyMemoryReviewDecisions(memoryReviewDrafts) {
-                            memoryReviewDrafts.removeAll()
-                        }
+                        if PublicationDrafts.shared.needsReadback("memory-review") { await PublicationDrafts.shared.retry("memory-review"); return }
+                        let ticket = PublicationDrafts.shared.begin("memory-review")
+                        let saved = await runner.applyMemoryReviewDecisions(memoryReviewDrafts, ticket: ticket)
+                        let current = PublicationDrafts.shared.isCurrent(ticket)
+                        if saved && current { PublicationDrafts.shared.resetSaved("memory-review") }
                     }
                 }
                 .buttonStyle(.borderedProminent)
@@ -3288,7 +3356,7 @@ struct ContentView: View {
                     }
                     Spacer()
                     Button {
-                        Task { await runner.refreshFileHistory(range: fileHistoryRange) }
+                        runner.requestFileHistoryRefresh()
                     } label: {
                         Label(runner.fileHistoryLoading ? "读取中" : "刷新", systemImage: "arrow.clockwise")
                     }
@@ -3304,9 +3372,6 @@ struct ContentView: View {
                     Text("90 天").tag("90d")
                 }
                 .pickerStyle(.segmented)
-                .onChange(of: fileHistoryRange) { _, range in
-                    Task { await runner.refreshFileHistory(range: range) }
-                }
 
                 if runner.fileHistoryLoading && !snapshot.isAvailable {
                     SettingsSection(title: "正在读取") {
@@ -3349,6 +3414,9 @@ struct ContentView: View {
                 }
             }
         }
+        .onAppear { runner.setFileHistoryRange(fileHistoryRange) }
+        .onChange(of: fileHistoryRange) { _, range in runner.setFileHistoryRange(range) }
+        .onDisappear { runner.setFileHistoryRange(nil) }
     }
 
     private func fileHistoryCoverageSection(_ snapshot: DocumentChangesSnapshot) -> some View {
@@ -3903,10 +3971,22 @@ struct ContentView: View {
     ) -> Binding<ActivityConfirmationCardDraft> {
         Binding(
             get: {
-                confirmationCardDrafts[group.groupKey] ?? ActivityConfirmationCardDraft(group: group)
+                var draft = confirmationCardDrafts[group.groupKey] ?? ActivityConfirmationCardDraft(group: group)
+                let initial = ActivityConfirmationCardDraft(group: group)
+                let scope = "activity-card." + group.groupKey
+                let values = PublicationDrafts.shared.value(scope + "/fields", initial: initial.publicationValues)
+                draft.workstream = values["workstream"] ?? ""; draft.outcome = values["outcome"] ?? ""
+                draft.pendingNegativeAnswer = values["answer"].flatMap(ActivityConfirmationAnswer.init(rawValue:))
+                draft.selectedReason = values["reason"].flatMap(ActivityConfirmationReason.init(rawValue:))
+                draft.note = PublicationDrafts.shared.value(scope + "/note/text", initial: "")
+                return draft
             },
             set: { draft in
                 confirmationCardDrafts[group.groupKey] = draft
+                let initial = ActivityConfirmationCardDraft(group: group)
+                PublicationDrafts.shared.update("activity-card." + group.groupKey + "/fields",
+                    initial: initial.publicationValues, value: draft.publicationValues)
+                PublicationDrafts.shared.update("activity-card." + group.groupKey + "/note/text", initial: "", value: draft.note)
             }
         )
     }
@@ -4396,7 +4476,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 12) {
                 SettingsRow(
                     systemImage: "book.pages",
-                    title: "AGI 长期记忆台账",
+                    title: "PSI 长期记忆台账",
                     subtitle: ledger.summaryLine
                 ) {
                     StatusPill(text: ledger.statusLabel, kind: ledger.kind)
@@ -4422,7 +4502,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 10) {
                 SettingsRow(
                     systemImage: "memorychip",
-                    title: "AGI 已写入记忆",
+                    title: "PSI 已写入记忆",
                     subtitle: runner.memoryApprovalStatus.currentMemorySummary
                 ) {
                     StatusPill(text: "\(runner.memoryApprovalStatus.currentMemories.count) 条", kind: .neutral)
@@ -5024,7 +5104,7 @@ struct ContentView: View {
                 runner.search(query: trimmedQuery, from: from, to: to)
             }
             refreshReviewContent()
-        case .today, .reflection, .evolution, .confirmations, .fileHistory, .memoryReview, .systemStatus, .privacy, .settings:
+        case .today, .reflection, .evolution, .confirmations, .workbench, .fileHistory, .memoryReview, .systemStatus, .privacy, .settings:
             break
         }
     }
@@ -5111,7 +5191,7 @@ struct MenuBarMark: View {
             .lineLimit(1)
             .fixedSize(horizontal: true, vertical: false)
         .frame(height: 18)
-        .accessibilityLabel("AGI \(title)")
+        .accessibilityLabel("PSI \(title)")
     }
 }
 
@@ -5545,6 +5625,10 @@ struct ActivityConfirmationCardDraft {
     var safeContextExpanded = false
     var businessDetailsExpanded = false
     var businessValidationMessage = ""
+    var publicationValues: [String: String] {
+        ["workstream": workstream, "outcome": outcome,
+         "answer": pendingNegativeAnswer?.rawValue ?? "", "reason": selectedReason?.rawValue ?? ""]
+    }
 
     init(group: ActivityConfirmationQuestionGroup) {
         workstream = group.effectiveWorkstream
@@ -5778,6 +5862,7 @@ struct ActivityConfirmationQuestionCard: View {
         .accessibilityElement(children: .contain)
     }
 
+    @MainActor
     private var clarificationControls: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 8) {
@@ -5877,6 +5962,7 @@ struct ActivityConfirmationQuestionCard: View {
         .accessibilityHint(draft.businessDetailsExpanded ? "收起业务归因与结果" : "展开并核对业务归因与结果")
     }
 
+    @MainActor
     private var clarificationTextField: some View {
         TextField("补充实际情况，供重新梳理使用", text: $draft.note)
             .textFieldStyle(.roundedBorder)
@@ -5913,7 +5999,13 @@ struct ActivityConfirmationQuestionCard: View {
         }
     }
 
+    @MainActor
     private var clarifyButton: some View {
+        VStack(alignment: .leading, spacing: 8) {
+        Button("放弃未提交的判断和工作主题") {
+            _ = PublicationDrafts.shared.discardValue("activity-card." + group.groupKey + "/fields", initial: ActivityConfirmationCardDraft(group: group).publicationValues)
+            var restored = draft; restored.businessValidationMessage = ""; draft = restored
+        }.disabled(isLoading || isClarifying)
         Button(action: submitClarification) {
             HStack(spacing: 7) {
                 if isClarifying {
@@ -5931,10 +6023,18 @@ struct ActivityConfirmationQuestionCard: View {
         .accessibilityHint(group.canClarify
             ? group.clarificationAccessibilityHint
             : "当前 Core 不支持对这张兼容卡重新梳理")
+        }
     }
 
+    @MainActor
     private func submitClarification() {
         guard clarificationSubmissionEnabled else { return }
+        guard PublicationDrafts.shared.isFieldClean("activity-card." + group.groupKey + "/fields") else {
+            draft.businessValidationMessage = "请先确认或放弃未提交的判断和工作主题，再重新梳理；补充说明会保留。"; return
+        }
+        guard draft.note.trimmingCharacters(in: .whitespacesAndNewlines).count <= 360 else {
+            draft.businessValidationMessage = "补充说明最多 360 字，请缩短后再保存。"; return
+        }
         clarify(ActivityConfirmationCommandBuilder.boundedNote(draft.note))
     }
 
@@ -6002,6 +6102,10 @@ struct ActivityConfirmationQuestionCard: View {
     }
 
     private func submit(_ response: ActivityConfirmationAnswer, reason: ActivityConfirmationReason?) {
+        guard draft.note.trimmingCharacters(in: .whitespacesAndNewlines).count <= 240,
+              draft.workstream.trimmingCharacters(in: .whitespacesAndNewlines).count <= 120 else {
+            draft.businessValidationMessage = "本次提交的说明最多 240 字，工作主题最多 120 字；请缩短后再确认。"; return
+        }
         if ActivityConfirmationStructuredDetailsPolicy.requiresBusinessDetails(
             contractVersion: group.contractVersion
         ) && (response == .occurred || response == .notOccurred) {
@@ -6059,12 +6163,12 @@ struct ActivityConfirmationQuestionCard: View {
 struct ManualActivityEntrySheet: View {
     @ObservedObject var runner: CoreRunner
     @Environment(\.dismiss) private var dismiss
-    @State private var safeLabel = ""
-    @State private var workstream = ""
-    @State private var outcome = ""
-    @State private var startedAt = Date().addingTimeInterval(-30 * 60)
-    @State private var endedAt = Date()
-    @State private var explicitlyConfirmed = false
+    @RetainedDraft("manual-activity", "safeLabel") private var safeLabel = ""
+    @RetainedDraft("manual-activity", "workstream") private var workstream = ""
+    @RetainedDraft("manual-activity", "outcome") private var outcome = ""
+    @RetainedDraft("manual-activity", "startedAt") private var startedAt = Date().addingTimeInterval(-30 * 60)
+    @RetainedDraft("manual-activity", "endedAt") private var endedAt = Date()
+    @RetainedDraft("manual-activity", "explicitlyConfirmed") private var explicitlyConfirmed = false
 
     private var canSubmit: Bool {
         !runner.manualActivityEntryLoading
@@ -6136,11 +6240,17 @@ struct ManualActivityEntrySheet: View {
             }
 
             HStack {
-                Button("取消") { dismiss() }
+                Button("放弃修改") { PublicationDrafts.shared.discard("manual-activity"); dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Spacer()
                 Button {
                     Task {
+                        if PublicationDrafts.shared.needsReadback("manual-activity") {
+                            await PublicationDrafts.shared.retry("manual-activity"); return
+                        }
+                        let formatter = ISO8601DateFormatter()
+                        let command = ActivityConfirmationCommandBuilder.manualAddCommand(safeLabel: safeLabel, workstream: workstream, outcome: outcome, startedAt: formatter.string(from: startedAt), endedAt: formatter.string(from: endedAt))
+                        let ticket = PublicationDrafts.shared.begin("manual-activity")
                         let added = await runner.addManualActivity(
                             safeLabel: safeLabel,
                             workstream: workstream,
@@ -6148,7 +6258,18 @@ struct ManualActivityEntrySheet: View {
                             startedAt: startedAt,
                             endedAt: endedAt
                         )
-                        if added { dismiss() }
+                        let current = PublicationDrafts.shared.isCurrent(ticket)
+                        PublicationDrafts.shared.finish(ticket, added)
+                        if added == .unknown {
+                            if let command {
+                                await PublicationDrafts.shared.verify(ticket) {
+                                    let arguments = command.arguments.map { $0 == "manual-add" ? "manual-receipt" : $0 }
+                                    return PublicationDrafts.readback(await runner.runCore(arguments, standardInput: command.standardInput), interface: "manual-activity-receipt")
+                                }
+                            }
+                        }
+                        if added == .unknown { PublicationDrafts.shared.completeAfterReadback(ticket, scope: "manual-activity") { dismiss() } }
+                        else if added == .clean && current { PublicationDrafts.shared.resetSaved("manual-activity"); dismiss() }
                     }
                 } label: {
                     if runner.manualActivityEntryLoading {
@@ -6164,7 +6285,14 @@ struct ManualActivityEntrySheet: View {
         }
         .padding(20)
         .frame(minWidth: 560, idealWidth: 620, minHeight: 500)
-        .onAppear { runner.manualActivityEntryMessage = "" }
+        .onAppear {
+            runner.manualActivityEntryMessage = ""
+            if PublicationDrafts.shared.isClean("manual-activity") {
+                PublicationDrafts.shared.initialize("manual-activity/startedAt", value: Date().addingTimeInterval(-1800))
+                PublicationDrafts.shared.initialize("manual-activity/endedAt", value: Date())
+            }
+        }
+        .task { await PublicationDrafts.shared.retry("manual-activity") }
     }
 }
 
@@ -6467,7 +6595,8 @@ struct DecisionQueueWriteSheet: View {
     let request: DecisionQueueWriteRequest
     @ObservedObject var runner: CoreRunner
     @Environment(\.dismiss) private var dismiss
-    @State private var draftText: String
+    @RetainedDraft private var draftText: String
+    private var draftScope: String { "decision-write." + request.itemKey }
     @State private var preview = MemoryApprovalPreviewResult()
     @State private var previewedText = ""
     @State private var loading = false
@@ -6475,7 +6604,7 @@ struct DecisionQueueWriteSheet: View {
     init(request: DecisionQueueWriteRequest, runner: CoreRunner) {
         self.request = request
         self.runner = runner
-        _draftText = State(initialValue: request.initialText)
+        _draftText = RetainedDraft(wrappedValue: request.initialText, "decision-write." + request.itemKey, "text")
     }
 
     var body: some View {
@@ -6601,7 +6730,7 @@ struct DecisionQueueWriteSheet: View {
             }
 
             HStack {
-                Button("取消") { dismiss() }
+                Button("放弃修改") { PublicationDrafts.shared.discard(draftScope); dismiss() }
                 Spacer()
                 Button {
                     Task { await runPreview() }
@@ -6621,6 +6750,7 @@ struct DecisionQueueWriteSheet: View {
         }
         .padding(20)
         .frame(width: 560)
+        .task { await PublicationDrafts.shared.retry(draftScope) }
     }
 
     private var previewStatusLabel: String {
@@ -6655,11 +6785,20 @@ struct DecisionQueueWriteSheet: View {
     }
 
     private func applyPreview() async {
-        guard preview.ready else { return }
+        guard preview.ready, !previewTextChanged else { return }
         loading = true
-        let result = await runner.applyDecisionQueuePlan(planID: preview.planID)
+        let ticket = PublicationDrafts.shared.begin(draftScope)
+        let planID = preview.planID
+        let result = await runner.applyDecisionQueuePlan(planID: planID)
+        let current = PublicationDrafts.shared.isCurrent(ticket)
+        let outcome = result.planID == planID ? result.saveStatus : .unknown
+        PublicationDrafts.shared.finish(ticket, outcome)
+        if outcome == .unknown {
+            await runner.verifyMemoryPlan(ticket, planID: planID)
+            PublicationDrafts.shared.completeAfterReadback(ticket, scope: draftScope) { dismiss() }
+        }
         loading = false
-        if result.status == "applied" {
+        if outcome == .clean && current {
             dismiss()
         } else {
             preview = result
@@ -6671,14 +6810,16 @@ struct MemoryApprovalSheet: View {
     let request: MemoryApprovalRequest
     @ObservedObject var runner: CoreRunner
     @Environment(\.dismiss) private var dismiss
-    @State private var draftText: String
+    @RetainedDraft private var draftText: String
+    private var draftScope: String { "memory-write." + request.ledgerID + "." + request.candidateKey }
     @State private var preview = MemoryApprovalPreviewResult()
     @State private var loading = false
+    @State private var previewedText: String?
 
     init(request: MemoryApprovalRequest, runner: CoreRunner) {
         self.request = request
         self.runner = runner
-        _draftText = State(initialValue: request.initialText)
+        _draftText = RetainedDraft(wrappedValue: request.initialText, "memory-write." + request.ledgerID + "." + request.candidateKey, "text")
     }
 
     var body: some View {
@@ -6736,7 +6877,8 @@ struct MemoryApprovalSheet: View {
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
             HStack {
-                Button("取消") {
+                Button("放弃修改") {
+                    PublicationDrafts.shared.discard(draftScope)
                     dismiss()
                 }
                 Spacer()
@@ -6751,27 +6893,39 @@ struct MemoryApprovalSheet: View {
                 } label: {
                     Label(request.confirmTitle, systemImage: request.isDestructive ? "trash" : "checkmark.circle")
                 }
-                .disabled(loading || !preview.ready)
+                .disabled(loading || !preview.ready || previewedText != draftText)
             }
             .buttonStyle(.bordered)
             .buttonBorderShape(.roundedRectangle(radius: 8))
         }
         .padding(18)
         .frame(width: 560)
+        .task { await PublicationDrafts.shared.retry(draftScope) }
     }
 
     private func generatePreview() async {
         loading = true
-        preview = await runner.previewMemoryApproval(request: request, memoryText: draftText)
+        let submitted = draftText
+        preview = await runner.previewMemoryApproval(request: request, memoryText: submitted)
+        previewedText = submitted
         loading = false
     }
 
     private func applyPreview() async {
-        guard preview.ready else { return }
+        guard preview.ready, previewedText == draftText else { return }
         loading = true
-        let result = await runner.applyMemoryApproval(planID: preview.planID)
+        let ticket = PublicationDrafts.shared.begin(draftScope)
+        let planID = preview.planID
+        let result = await runner.applyMemoryApproval(planID: planID)
+        let current = PublicationDrafts.shared.isCurrent(ticket)
+        let outcome = result.planID == planID ? result.saveStatus : .unknown
+        PublicationDrafts.shared.finish(ticket, outcome)
+        if outcome == .unknown {
+            await runner.verifyMemoryPlan(ticket, planID: planID)
+            PublicationDrafts.shared.completeAfterReadback(ticket, scope: draftScope) { dismiss() }
+        }
         loading = false
-        if result.status == "applied" {
+        if outcome == .clean && current {
             dismiss()
         } else {
             preview = result
@@ -7410,6 +7564,7 @@ struct MemoryReviewCandidate: Identifiable {
     var id: String { memoryID }
     var memoryID = ""
     var contentSHA256 = ""
+    var publicationVersion: String?
     var fingerprint = ""
     var categories: [String] = []
     var reasonCodes: [String] = []
@@ -7425,6 +7580,10 @@ struct MemoryReviewCandidate: Identifiable {
         }
         memoryID = identifier
         contentSHA256 = dictionary["content_sha256"] as? String ?? ""
+        if contentSHA256.count == 64, let candidate = dictionary["candidate_fingerprint"] as? String, !candidate.isEmpty,
+           let policy = dictionary["policy_version"] as? String, !policy.isEmpty {
+            publicationVersion = contentSHA256 + ":" + candidate + ":" + policy
+        }
         fingerprint = dictionary["fingerprint"] as? String ?? ""
         categories = dictionary["categories"] as? [String] ?? []
         reasonCodes = dictionary["reason_codes"] as? [String] ?? []
@@ -9779,6 +9938,13 @@ struct MemoryApprovalPreviewResult {
     var status = "idle"
     var planID = ""
     var message = "先生成 dry-run 预览。"
+    var safeReceipt = false
+    var saveStatus: PublicationDraftState.Status {
+        guard safeReceipt, !planID.isEmpty else { return .unknown }
+        if status == "applied" { return .clean }
+        if ["controlled_mem0_writer_disabled", "plan_expired", "plan_missing", "plan_invalid", "unsupported_action", "blocked", "rejected", "disabled"].contains(status) { return .saveFailed }
+        return .unknown
+    }
     var processedCount = 0
     var deletedCount = 0
     var rewrittenCount = 0
@@ -9793,6 +9959,7 @@ struct MemoryApprovalPreviewResult {
             return
         }
         status = object["status"] as? String ?? status
+        safeReceipt = object["raw_access"] as? Bool == false
         planID = object["plan_id"] as? String ?? ""
         message = object["summary"] as? String ?? object["message"] as? String ?? message
         if let preview = object["preview"] as? [String: Any] {
@@ -9858,9 +10025,9 @@ struct AttentionItem: Identifiable {
         if !remediation.isEmpty { lines.append("建议：\(remediation)") }
         if !recheck.isEmpty, severity != "info" { lines.append("复验：\(recheck)") }
         return lines.filter { !$0.isEmpty }.joined(separator: "\n")
-            .replacingOccurrences(of: "PAM 开发调试面板", with: "AGI 开发调试面板")
-            .replacingOccurrences(of: "PAM 调试面板", with: "AGI 调试面板")
-            .replacingOccurrences(of: "PAM 健康", with: "AGI 健康")
+            .replacingOccurrences(of: "PAM 开发调试面板", with: "PSI 开发调试面板")
+            .replacingOccurrences(of: "PAM 调试面板", with: "PSI 调试面板")
+            .replacingOccurrences(of: "PAM 健康", with: "PSI 健康")
     }
 }
 
@@ -11708,6 +11875,7 @@ final class CoreRunner: ObservableObject {
     @Published var memoryReviewStatus = MemoryReviewStatus()
     @Published var memoryReviewList = MemoryReviewList()
     @Published var memoryReviewPreview = MemoryReviewPreview()
+    private var previewedMemoryReviewDecisions: [String: String] = [:]
     @Published var memoryReviewLoading = false
     @Published var memoryReviewMessage = ""
     @Published var memoryRevealSession = MemoryRevealSession()
@@ -11774,6 +11942,10 @@ final class CoreRunner: ObservableObject {
     private var decisionQueueLoaded = false
     private var diagnosticsLoaded = false
     private var controlWindowVisible = false
+    private var visibleFileHistoryRange: String?
+    private var fileHistoryGeneration = 0
+    private var fileHistoryReadInFlight = false
+    private var lastFileHistoryReadAt = Date.distantPast
     private var menuVisible = false
     private var activityConfirmationViewVisible = false
     private var tickDate = Date()
@@ -11868,7 +12040,15 @@ final class CoreRunner: ObservableObject {
         return "更新 \(Self.shortTimeFormatter.string(from: lastActivityConfirmationUpdatedAt))"
     }
 
-    init() {
+    init() {}
+
+    private func updateInteractiveTicker() {
+        guard controlWindowVisible || menuVisible else {
+            ticker?.invalidate()
+            ticker = nil
+            return
+        }
+        guard ticker == nil else { return }
         // Keep ticking while the menu is open; menu tracking does not run default-mode timers.
         let timer = Timer(timeInterval: 1, repeats: true) { _ in
             Task { @MainActor [weak self] in
@@ -11918,6 +12098,10 @@ final class CoreRunner: ObservableObject {
             }
         }
         let confirmationInterval: TimeInterval = interactive ? 60 : 300
+        if controlWindowVisible, visibleFileHistoryRange != nil,
+           tickDate.timeIntervalSince(lastFileHistoryReadAt) >= quickInterval {
+            requestFileHistoryRefresh(showProgress: false)
+        }
         let lastConfirmationRefresh = lastActivityConfirmationUpdatedAt ?? .distantPast
         if activityConfirmationViewVisible,
            controlWindowVisible,
@@ -11928,12 +12112,18 @@ final class CoreRunner: ObservableObject {
     }
 
     func setControlWindowVisible(_ visible: Bool) {
-        controlWindowVisible = visible
+        if controlWindowVisible != visible {
+            controlWindowVisible = visible
+            fileHistoryGeneration += 1
+            if visible { requestFileHistoryRefresh() }
+        }
+        updateInteractiveTicker()
         if !visible { clearRevealedMemory() }
     }
 
     func setMenuVisible(_ visible: Bool) {
         menuVisible = visible
+        updateInteractiveTicker()
     }
 
     func setActivityConfirmationViewVisible(_ visible: Bool) {
@@ -12024,7 +12214,6 @@ final class CoreRunner: ObservableObject {
             lastFullStatusRefreshAt = .distantPast
         }
         statusLine = statusLine(from: statusSnapshot)
-        LocalNotificationCoordinator.shared.updateSystemHealth(snapshot: statusSnapshot)
     }
 
     func refreshForInteraction() async {
@@ -12077,7 +12266,6 @@ final class CoreRunner: ObservableObject {
             lastFullStatusRefreshAt = .distantPast
         }
         statusLine = statusLine(from: statusSnapshot)
-        LocalNotificationCoordinator.shared.updateSystemHealth(snapshot: statusSnapshot)
         return statusSnapshot.requiresFullRefresh
     }
 
@@ -12301,7 +12489,7 @@ final class CoreRunner: ObservableObject {
     }
 
     private func encodedDecisions(_ decisions: [String: String]) -> String? {
-        let payload = decisions.map { ["memory_id": $0.key, "action": $0.value, "note": "AGI 记忆库页面"] }
+        let payload = decisions.map { ["memory_id": $0.key, "action": $0.value, "note": "PSI 记忆库页面"] }
         guard let data = try? JSONSerialization.data(withJSONObject: payload) else { return nil }
         return String(data: data, encoding: .utf8)
     }
@@ -12316,39 +12504,76 @@ final class CoreRunner: ObservableObject {
         memoryReviewPreview = MemoryReviewPreview(
             jsonText: await runCore(["memory-review", "preview", "--decisions", encoded])
         )
+        previewedMemoryReviewDecisions = decisions
         memoryReviewMessage = memoryReviewPreview.errorMessage.isEmpty
             ? "已生成预览，确认后才会写入。"
             : memoryReviewPreview.errorMessage
         memoryReviewLoading = false
     }
 
-    func applyMemoryReviewDecisions(_ decisions: [String: String]) async -> Bool {
-        guard memoryReviewPreview.isReady else {
-            memoryReviewMessage = "请先生成预览。"
+    func verifyMemoryPlan(_ ticket: PublicationDrafts.Ticket, planID: String) async {
+        await PublicationDrafts.shared.verify(ticket) {
+            let raw = await self.runCore(["memory-approval", "records", "--limit", "1000"])
+            guard let value = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+                  value["status"] as? String == "ok", value["raw_access"] as? Bool == false,
+                  let records = value["records"] as? [[String: Any]] else { return .unknown }
+            let matches = records.filter { $0["plan_id"] as? String == planID }
+            guard var latest = matches.first else { return .unknown }
+            latest["raw_access"] = false // Verified by the enclosing records receipt.
+            guard let data = try? JSONSerialization.data(withJSONObject: latest), let raw = String(data: data, encoding: .utf8) else { return .unknown }
+            let result = MemoryApprovalPreviewResult(jsonText: raw)
+            return result.planID == planID ? result.saveStatus : .unknown
+        }
+    }
+
+    func memoryReviewReceipt(_ decisions: [String: String], versions: [String: String]) async -> PublicationDraftState.Status {
+        guard !decisions.isEmpty, decisions.keys.allSatisfy({ versions[$0] != nil }) else { return .unknown }
+        let raw = await runCore(["memory-review", "list", "--state", "all", "--limit", "10000"])
+        guard let result = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+              result["interface"] as? String == "memory-review", result["contract"] as? Int == 2,
+              result["raw_access"] as? Bool == false, result["error"] == nil,
+              let items = result["items"] as? [[String: Any]] else { return .unknown }
+        for (id, choice) in decisions {
+            let matches = items.filter { $0["memory_id"] as? String == id }
+            guard matches.count == 1, let item = matches.first,
+                  item["decision"] as? String == choice,
+                  item["review_state"] as? String == "decided",
+                  memoryReviewVersion(item) == versions[id] else { return .unknown }
+        }
+        return .clean
+    }
+    func memoryReviewVersion(_ item: [String: Any]) -> String? {
+        guard let hash = item["content_sha256"] as? String, hash.count == 64,
+              let fingerprint = item["candidate_fingerprint"] as? String, !fingerprint.isEmpty,
+              let policy = item["policy_version"] as? String, !policy.isEmpty else { return nil }
+        return hash + ":" + fingerprint + ":" + policy
+    }
+    func applyMemoryReviewDecisions(_ decisions: [String: String], ticket: PublicationDrafts.Ticket) async -> Bool {
+        guard memoryReviewPreview.isReady, previewedMemoryReviewDecisions == decisions, let encoded = encodedDecisions(decisions) else {
+            PublicationDrafts.shared.finish(ticket, .saveFailed)
+            memoryReviewMessage = "请先生成本次选择的预览。"; return false
+        }
+        let versions = Dictionary(uniqueKeysWithValues: memoryReviewList.items.compactMap { item in
+            item.publicationVersion.map { (item.memoryID, $0) }
+        })
+        memoryReviewLoading = true; defer { memoryReviewLoading = false }
+        let raw = await runCore(["memory-review", "apply", "--decisions", encoded, "--confirm-digest", memoryReviewPreview.digest])
+        let object = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any] ?? [:]
+        let recorded = AttentionWriteOutcome.memory(object) == .recorded && object["raw_access"] as? Bool == false &&
+            (object["applied_count"] as? Int ?? -1) + (object["unchanged_count"] as? Int ?? 0) == decisions.count
+        let outcome = recorded ? PublicationDraftState.Status.clean : AttentionWriteOutcome.memory(object) == .rejected ? .saveFailed : .unknown
+        PublicationDrafts.shared.finish(ticket, outcome)
+        if outcome == .saveFailed {
+            memoryReviewPreview = MemoryReviewPreview()
+            memoryReviewMessage = "内容或选择已变化，本次尚未写入。请刷新后重新预览，再由你确认。"
             return false
         }
-        guard let encoded = encodedDecisions(decisions) else {
-            memoryReviewMessage = "无法编码待提交的裁决。"
+        if !recorded {
+            await PublicationDrafts.shared.verify(ticket) { await self.memoryReviewReceipt(decisions, versions: versions) }
+            memoryReviewMessage = "写入回执不完整，已沿原入口核对；仍未确认的内容继续受保护。"
             return false
         }
-        memoryReviewLoading = true
-        let raw = await runCore([
-            "memory-review", "apply",
-            "--decisions", encoded,
-            "--confirm-digest", memoryReviewPreview.digest,
-        ])
-        memoryReviewLoading = false
-        guard let data = raw.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            memoryReviewMessage = "写入失败：无法解析结果。"
-            return false
-        }
-        if let failure = object["error"] as? String {
-            memoryReviewMessage = "写入失败：\(failure)"
-            return false
-        }
-        let applied = object["applied_count"] as? Int ?? 0
-        memoryReviewMessage = "已写入 \(applied) 条裁决，AI 召回立即按新结果执行。"
+        memoryReviewMessage = "本次选择已写入。"
         memoryReviewPreview = MemoryReviewPreview()
         await refreshMemoryReview(force: true)
         return true
@@ -12587,7 +12812,6 @@ final class CoreRunner: ObservableObject {
             activityConfirmationMode = coreMode
             UserDefaults.standard.set(coreMode.rawValue, forKey: "pam.activity-confirmation.mode")
         }
-        LocalNotificationCoordinator.shared.update(snapshot: snapshot, pendingGroups: parsed.pendingGroups)
         lastActivityConfirmationUpdatedAt = Date()
         activityConfirmationLoaded = true
         let visibleGroupKeys = Set(parsed.pendingGroups.map(\.groupKey))
@@ -12856,7 +13080,6 @@ final class CoreRunner: ObservableObject {
             activityConfirmationInsufficientHasMore = false
             activityConfirmationInsufficientNextCursor = ""
         }
-        LocalNotificationCoordinator.shared.update(snapshot: snapshot, pendingGroups: combinedGroups)
         lastActivityConfirmationUpdatedAt = Date()
         activityConfirmationLoaded = true
         activityConfirmationClarifications = activityConfirmationClarifications.filter {
@@ -12898,8 +13121,8 @@ final class CoreRunner: ObservableObject {
         outcome: String,
         startedAt: Date,
         endedAt: Date
-    ) async -> Bool {
-        guard !manualActivityEntryLoading else { return false }
+    ) async -> PublicationDraftState.Status {
+        guard !manualActivityEntryLoading else { return .saveFailed }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         guard let command = ActivityConfirmationCommandBuilder.manualAddCommand(
@@ -12910,7 +13133,7 @@ final class CoreRunner: ObservableObject {
             endedAt: formatter.string(from: endedAt)
         ) else {
             manualActivityEntryMessage = "请完整填写活动摘要、工作流、结果和有效时间范围。"
-            return false
+            return .saveFailed
         }
         manualActivityEntryLoading = true
         manualActivityEntryMessage = "正在本机补记…"
@@ -12925,7 +13148,7 @@ final class CoreRunner: ObservableObject {
         else {
             manualActivityEntryMessage = "补记结果无法解析或未满足本机安全契约；未确认是否已记录。"
             manualActivityEntryLoading = false
-            return false
+            return PublicationDrafts.mutation(raw)
         }
         manualActivityEntryMessage = "已补记为本机已确认事实。"
         manualActivityEntryLoading = false
@@ -12933,7 +13156,14 @@ final class CoreRunner: ObservableObject {
         await refreshActivityConfirmations()
         await refreshStatus()
         setActivityConfirmationMessage("已补记一项系统遗漏，并更新今天的已确认事实。", severity: .success)
-        return true
+        return .clean
+    }
+
+    func verifyActivityForm(_ ticket: PublicationDrafts.Ticket, payload: [String: Any]) async {
+        guard let data = try? JSONSerialization.data(withJSONObject: payload), let body = String(data: data, encoding: .utf8) else { return }
+        await PublicationDrafts.shared.verify(ticket) {
+            PublicationDrafts.readback(await self.runCore(["activity-confirmation", "save-receipt", "--payload-stdin"], standardInput: body), interface: "activity-form-receipt")
+        }
     }
 
     func answerActivityConfirmation(
@@ -12967,12 +13197,38 @@ final class CoreRunner: ObservableObject {
             )
             return
         }
+        let scope = "activity-card." + group.groupKey
+        if PublicationDrafts.shared.needsReadback(scope) { await PublicationDrafts.shared.retry(scope); return }
         activityConfirmationMutationGeneration &+= 1
         activityConfirmationWorkingGroupKeys.insert(group.groupKey)
         defer {
             activityConfirmationWorkingGroupKeys.remove(group.groupKey)
         }
+        let ticket = PublicationDrafts.shared.begin("activity-card." + group.groupKey)
         let raw = await runCore(command.arguments, standardInput: command.standardInput)
+        let object = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any]
+        var saveOutcome: PublicationDraftState.Status = .unknown
+        if let object, ActivityConfirmationSafetyBoundary.permits(rawAccess: object["raw_access"],
+            destructiveActions: object["destructive_actions"], memoryWriteActions: object["memory_write_actions"]) {
+            if group.contractVersion >= 4 {
+                switch ActivityConfirmationMutationResponseValidator.v4GroupAnswerResult(object, expectedGroupKey: group.groupKey,
+                    expectedAnswer: answer, expectedWorkstream: workstream, expectedOutcome: outcome) {
+                case .recorded: saveOutcome = .clean
+                case .stale: saveOutcome = .saveFailed
+                case .unsafe: break
+                }
+            } else if ["recorded", "answered", "resolved", "deferred", "ok"].contains(object["status"] as? String ?? "") { saveOutcome = .clean }
+        }
+        if CoreOutputErrorClassifier.classify(raw) == .databaseBusy { saveOutcome = .saveFailed }
+        PublicationDrafts.shared.finish(ticket, saveOutcome)
+        if saveOutcome == .unknown {
+            var payload: [String: Any] = ["purpose":"answer", "answer":answer.rawValue, "reason":request.reason, "note":note, "workstream":workstream, "outcome":outcome]
+            switch target {
+            case .questionGroup(let key, let revision): payload["group_key"] = key; payload["member_revision"] = revision
+            case .legacyItem(let key): payload["item_key"] = key
+            }
+            await verifyActivityForm(ticket, payload: payload)
+        }
         if CoreOutputErrorClassifier.classify(raw) == .databaseBusy {
             setActivityConfirmationMessage(
                 "数据库正在维护，这次回答没有提交；请稍后重试。",
@@ -13008,6 +13264,9 @@ final class CoreRunner: ObservableObject {
         _ group: ActivityConfirmationQuestionGroup,
         note: String
     ) async {
+        guard PublicationDrafts.shared.isFieldClean("activity-card." + group.groupKey + "/fields") else {
+            setActivityConfirmationMessage("请先确认或放弃未提交的判断和工作主题，再重新梳理。", severity: .warning); return
+        }
         guard !group.isLegacy else {
             setActivityConfirmationMessage("当前 Core 不支持对这张兼容卡重新梳理。", severity: .warning)
             return
@@ -13026,12 +13285,25 @@ final class CoreRunner: ObservableObject {
             )
             return
         }
+        let scope = "activity-card." + group.groupKey + "/note"
+        if PublicationDrafts.shared.needsReadback(scope) { await PublicationDrafts.shared.retry(scope); return }
         activityConfirmationMutationGeneration &+= 1
         activityConfirmationClarifyingGroupKeys.insert(group.groupKey)
         defer {
             activityConfirmationClarifyingGroupKeys.remove(group.groupKey)
         }
-        let raw = await runCore(command.arguments, standardInput: command.standardInput)
+        let ticket = PublicationDrafts.shared.begin("activity-card." + group.groupKey + "/note")
+        let requestID = UUID().uuidString.lowercased()
+        let raw = await runCore(command.arguments + ["--save-request", requestID], standardInput: command.standardInput)
+        let receipt = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any] ?? [:]
+        let verified = receipt["save_request"] as? String == requestID && ActivityConfirmationSafetyBoundary.permits(rawAccess: receipt["raw_access"], destructiveActions: receipt["destructive_actions"], memoryWriteActions: receipt["memory_write_actions"])
+        let response = ActivityConfirmationClarifyResponse(jsonText: raw)
+        let outcome: PublicationDraftState.Status = response.status == "clarified" && verified ? .clean :
+            (["stale", "blocked"].contains(response.status) || CoreOutputErrorClassifier.classify(raw) == .databaseBusy ? .saveFailed : .unknown)
+        PublicationDrafts.shared.finish(ticket, outcome)
+        if outcome == .unknown {
+            await verifyActivityForm(ticket, payload: ["purpose":"clarification", "group_key":group.groupKey, "member_revision":group.memberRevision, "note":note, "save_request":requestID])
+        }
         if CoreOutputErrorClassifier.classify(raw) == .databaseBusy {
             setActivityConfirmationMessage(
                 "数据库正在维护，这次重新梳理没有执行；请稍后重试。",
@@ -13039,7 +13311,6 @@ final class CoreRunner: ObservableObject {
             )
             return
         }
-        let response = ActivityConfirmationClarifyResponse(jsonText: raw)
         if response.status == "clarified" {
             if let clarification = response.clarification {
                 activityConfirmationClarifications[group.groupKey] = clarification
@@ -13176,19 +13447,49 @@ final class CoreRunner: ObservableObject {
         }
     }
 
-    func refreshFileHistory(range: String) async {
-        guard ["today", "yesterday", "7d", "30d", "90d"].contains(range) else {
+    func setFileHistoryRange(_ range: String?) {
+        guard range != visibleFileHistoryRange else { return }
+        fileHistoryGeneration += 1
+        fileHistorySnapshot = DocumentChangesSnapshot()
+        fileHistoryMessage = ""
+        if let range, !["today", "yesterday", "7d", "30d", "90d"].contains(range) {
+            visibleFileHistoryRange = nil
             fileHistoryMessage = "时间范围不符合安全契约；未执行查询。"
             return
         }
-        if fileHistoryLoading { return }
-        fileHistoryLoading = true
-        defer { fileHistoryLoading = false }
-        let raw = await runCore([
-            "document-changes", "history", "--range", range, "--limit", "1000",
-        ])
-        let parsed = documentChangesSnapshotFromJSON(raw)
-        fileHistorySnapshot = parsed
+        visibleFileHistoryRange = range
+        requestFileHistoryRefresh()
+    }
+
+    func requestFileHistoryRefresh(showProgress: Bool = true) {
+        guard controlWindowVisible, visibleFileHistoryRange != nil,
+              !statusSnapshot.displayStateUnknown else { return }
+        if showProgress { fileHistoryLoading = true }
+        guard !fileHistoryReadInFlight else { return }
+        fileHistoryReadInFlight = true
+        Task {
+            defer {
+                fileHistoryReadInFlight = false
+                if fileHistoryLoading { fileHistoryLoading = false }
+            }
+            while controlWindowVisible, let range = visibleFileHistoryRange,
+                  !statusSnapshot.displayStateUnknown {
+                let generation = fileHistoryGeneration
+                let raw = await runCore([
+                    "document-changes", "history", "--range", range, "--limit", "1000",
+                ])
+                // Let the old read finish, then serve only the latest visible selection.
+                guard generation == fileHistoryGeneration else { continue }
+                guard !statusSnapshot.displayStateUnknown else { return }
+                lastFileHistoryReadAt = Date()
+                applyFileHistory(documentChangesSnapshotFromJSON(raw))
+                return
+            }
+        }
+    }
+
+    private func applyFileHistory(_ parsed: DocumentChangesSnapshot) {
+        if parsed != fileHistorySnapshot { fileHistorySnapshot = parsed }
         if parsed.isBlocked {
             fileHistoryMessage = parsed.limitations.first ?? "文件历史未通过安全契约。"
         } else if !parsed.isAvailable {
@@ -13840,7 +14141,7 @@ final class CoreRunner: ObservableObject {
         let plistURL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library", isDirectory: true)
             .appendingPathComponent("LaunchAgents", isDirectory: true)
-            .appendingPathComponent("app.personalai.monitor.core.plist")
+            .appendingPathComponent("app.psi.core.plist")
         guard let data = try? Data(contentsOf: plistURL),
               let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
               let arguments = plist["ProgramArguments"] as? [String],
@@ -14188,7 +14489,7 @@ final class CoreRunner: ObservableObject {
         await withCheckedContinuation { continuation in
             let context = LAContext()
             var error: NSError?
-            let reason = "确认删除本机 AGI 活动数据。"
+            let reason = "确认删除本机 PSI 活动数据。"
             guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else {
                 continuation.resume(returning: false)
                 return
@@ -14501,7 +14802,7 @@ final class CoreRunner: ObservableObject {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support", isDirectory: true)
         return appSupport
-            .appendingPathComponent("Personal AI Monitor", isDirectory: true)
+            .appendingPathComponent("PSI", isDirectory: true)
             .appendingPathComponent("core", isDirectory: true)
     }
 

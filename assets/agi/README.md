@@ -1,9 +1,7 @@
-AGI 应用图标使用用户于 2026-09-13 授权安装的蓝色玻璃圆角版，保留 AGI 标志与文字，图标外侧为真实透明通道。
+PSI 图标由霓虹树形和数字地球组成，应用与网页使用同一份无字图稿。
 
-- `AGI-app-icon.png`：应用图标的权威图源。
-- `AGI-app-icon.icns`：从同一原图生成、经系统工具反向解包核对的静态应用资源，完整保留十个普通与 Retina 尺寸；构建只复制此文件。
-- `AGI-app-icon.sha256`：绑定权威 PNG 与静态 ICNS 的字节；任一变化未同步校验清单时构建失败。
-- `tools/generate_app_icon.swift`：仅在明确修改图标时按原图生成十尺寸 iconset，再由系统 `iconutil` 封装、反向解包核对后更新上述静态文件与校验清单。
-- 其余 SVG 是之前的矢量版本；菜单栏单色模板沿用现有实现，不能作为当前彩色应用图标来源。
-
-实际界面和 Dock 在应用启动时读取包内 `AppIcon.icns`；单独设置 Finder 自定义图标不能替代内置资源。修改后须重新签名并重新启动界面应用，核对实际资源及新进程。
+- `AGI-app-icon.png`：无文字树形图稿。
+- `AGI-app-icon.icns`：十尺寸 macOS 图标，统一透明留白和圆角。
+- `AGI-app-icon.sha256`：图稿与图标校验。
+- SVG 兼容入口内嵌同一无字图标缩略版。
+- `tools/generate_app_icon.swift`：以固定模板生成尺寸与外形，应用内读取包内 AppIcon.icns。

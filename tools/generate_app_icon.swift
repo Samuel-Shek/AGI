@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-// Render the user-approved artwork without redrawing its logo or lettering.
+// Package the text-free tree artwork in a consistent macOS icon silhouette.
 struct IconSize { let filename: String; let pixels: Int }
 let sizes = [
     IconSize(filename: "icon_16x16.png", pixels: 16),
@@ -21,7 +21,7 @@ try FileManager.default.createDirectory(at: output, withIntermediateDirectories:
 let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
     .deletingLastPathComponent().appendingPathComponent("assets/agi/AGI-app-icon.png")
 guard let artwork = NSImage(contentsOf: source) else {
-    fputs("Missing approved AGI icon artwork\n", stderr)
+    fputs("Missing approved PSI icon artwork\n", stderr)
     exit(3)
 }
 for size in sizes {
@@ -31,7 +31,10 @@ for size in sizes {
     NSGraphicsContext.saveGraphicsState()
     NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: image)
     NSGraphicsContext.current?.imageInterpolation = .high
-    artwork.draw(in: NSRect(x: 0, y: 0, width: size.pixels, height: size.pixels),
+    let side = CGFloat(size.pixels)
+    let tile = NSRect(x: side * 0.09, y: side * 0.09, width: side * 0.82, height: side * 0.82)
+    NSBezierPath(roundedRect: tile, xRadius: side * 0.18, yRadius: side * 0.18).addClip()
+    artwork.draw(in: tile,
         from: .zero, operation: .copy, fraction: 1)
     NSGraphicsContext.restoreGraphicsState()
     try image.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent(size.filename))

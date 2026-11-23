@@ -44,6 +44,9 @@ public enum AttentionWriteOutcome: Sendable {
         let prewrite = ["事项已变化，请重新查看成员与影响。", "所选成员不属于当前事项。",
             "成员的适用范围不一致或尚未明确，请分别选择处理方式。", "批量操作需要相同处理方式。",
             "内容或成员已变化，请重新预览后确认。", "confirmation digest does not match the previewed batch"]
+        if result["interface"] as? String == "memory-review", result["ok"] as? Bool == false,
+           let error = result["error"] as? String,
+           error == "confirmation digest does not match the previewed batch" || error == "source_not_in_display_scope" || error.hasPrefix("record_changed:") || error.hasPrefix("evidence_changed:") { return .rejected }
         if result["interface"] as? String == "attention-center", result["contract"] as? Int == 1,
            result["status"] as? String == "unavailable", let error = result["error"] as? String,
            prewrite.contains(error) || error.hasPrefix("record_changed:") || error.hasPrefix("evidence_changed:") { return .rejected }
@@ -81,9 +84,10 @@ public struct AttentionSubmissions {
         receiptHistory[key, default: []].append(receipt)
         switch outcome {
         case .recorded:
+            uncertain.remove(key); rejected.remove(key)
             completed.insert(key); if deferred { deferredRecorded.insert(key) }
             if !reviewLaterMembers.isEmpty { reviewLaterRecorded[key] = reviewLaterMembers }
-        case .rejected: rejected.insert(key)
+        case .rejected: uncertain.remove(key); rejected.insert(key)
         case .unknown: uncertain.insert(key)
         }
     }

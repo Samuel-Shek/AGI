@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS jev_rank_batches(id TEXT PRIMARY KEY,created REAL NOT
 '''
 
 def client_module():
-    name='_bigking_jev_client'
+    name='_psi_optional_ranking_client'
     if name not in sys.modules:
         root=Path.home()/'Code/active/jev-judgment-service/jev'
         spec=importlib.util.spec_from_file_location(name,root/'__init__.py',submodule_search_locations=[str(root)])

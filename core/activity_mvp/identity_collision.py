@@ -14,7 +14,7 @@ from .app_identity import (
     resolve_app_identity,
 )
 from .document_changes import document_authorization_lock
-from .storage import SCHEMA_VERSION
+SUPPORTED_IDENTITY_SCHEMA_VERSIONS = (32, 33)
 
 
 IDENTITY_COLLISION_RULE_VERSION = f"v0.5.1-{IDENTITY_RULE_VERSION}"
@@ -31,14 +31,15 @@ def preview_document_signal_identity_collisions(
 ) -> dict[str, Any]:
     """Return a content-free preview; no row or manifest is written."""
 
-    _require_schema_32(conn)
+    schema_version = _require_schema_32(conn)
     cutoff = _validated_cutoff(historical_cutoff)
     with document_authorization_lock(conn, exclusive=False):
         entries = _collision_entries(conn, cutoff)
     return _safe_result(
+        schema_version=schema_version,
         status="preview",
         entries=entries,
-        manifest_hash=_manifest_hash(_manifest_payload(entries, cutoff)),
+        manifest_hash=_manifest_hash(_manifest_payload(entries, cutoff, schema_version)),
         historical_cutoff=cutoff,
         updated_count=0,
         restored_count=0,
@@ -54,20 +55,21 @@ def apply_document_signal_identity_collisions(
     """Invalidate only preview-bound deterministic collision rows atomically."""
 
     _require_clean_connection(conn, "apply")
-    _require_schema_32(conn)
+    schema_version = _require_schema_32(conn)
     expected_hash = _validated_hash(confirm_hash, field="confirm_hash")
     cutoff = _validated_cutoff(historical_cutoff)
     with document_authorization_lock(conn, exclusive=True, initialize_if_missing=True):
         try:
             conn.execute("BEGIN IMMEDIATE")
             entries = _collision_entries(conn, cutoff)
-            payload = _manifest_payload(entries, cutoff)
+            payload = _manifest_payload(entries, cutoff, schema_version)
             manifest_hash = _manifest_hash(payload)
             if manifest_hash != expected_hash:
                 raise ValueError("identity_collision_preview_hash_mismatch")
             if not entries:
                 conn.rollback()
                 return _safe_result(
+                    schema_version=schema_version,
                     status="no_changes",
                     entries=entries,
                     manifest_hash=manifest_hash,
@@ -110,6 +112,7 @@ def apply_document_signal_identity_collisions(
                 raise RuntimeError("identity_collision_quantity_conservation_failed")
             conn.commit()
             return _safe_result(
+                schema_version=schema_version,
                 status="applied",
                 entries=entries,
                 manifest_hash=manifest_hash,
@@ -131,7 +134,7 @@ def reverse_document_signal_identity_collisions(
     """Restore exactly the original fields protected by one private manifest."""
 
     _require_clean_connection(conn, "reverse")
-    _require_schema_32(conn)
+    schema_version = _require_schema_32(conn)
     requested_hash = _validated_hash(manifest_hash, field="manifest_hash")
     with document_authorization_lock(conn, exclusive=True, initialize_if_missing=True):
         try:
@@ -147,6 +150,7 @@ def reverse_document_signal_identity_collisions(
             if manifest["state"] == "reversed":
                 conn.rollback()
                 return _safe_result(
+                    schema_version=schema_version,
                     status="already_reversed",
                     entries=entries,
                     manifest_hash=requested_hash,
@@ -181,6 +185,7 @@ def reverse_document_signal_identity_collisions(
             )
             conn.commit()
             return _safe_result(
+                schema_version=schema_version,
                 status="reversed",
                 entries=entries,
                 manifest_hash=requested_hash,
@@ -268,11 +273,11 @@ def _collision_entries(conn: sqlite3.Connection, historical_cutoff: str) -> list
     return entries
 
 
-def _manifest_payload(entries: list[dict[str, Any]], historical_cutoff: str) -> dict[str, Any]:
+def _manifest_payload(entries: list[dict[str, Any]], historical_cutoff: str, schema_version: int) -> dict[str, Any]:
     return {
         "manifest_version": MANIFEST_VERSION,
         "rule_version": IDENTITY_COLLISION_RULE_VERSION,
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": schema_version,
         "historical_cutoff": historical_cutoff,
         "entries": sorted(entries, key=lambda item: str(item.get("id") or "")),
     }
@@ -290,7 +295,7 @@ def _validated_manifest(raw: str, expected_hash: str) -> dict[str, Any]:
     if (
         int(payload.get("manifest_version") or 0) != MANIFEST_VERSION
         or str(payload.get("rule_version") or "") != IDENTITY_COLLISION_RULE_VERSION
-        or int(payload.get("schema_version") or 0) != SCHEMA_VERSION
+        or int(payload.get("schema_version") or 0) not in SUPPORTED_IDENTITY_SCHEMA_VERSIONS
         or not _is_valid_cutoff(payload.get("historical_cutoff"))
         or not isinstance(entries, list)
         or _manifest_hash(payload) != expected_hash
@@ -314,6 +319,7 @@ def _validated_manifest(raw: str, expected_hash: str) -> dict[str, Any]:
 
 def _safe_result(
     *,
+    schema_version: int,
     status: str,
     entries: list[dict[str, Any]],
     manifest_hash: str,
@@ -325,7 +331,7 @@ def _safe_result(
         "interface": "document_signal_identity_collisions",
         "status": status,
         "safe_status": "content_free",
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": schema_version,
         "rule_version": IDENTITY_COLLISION_RULE_VERSION,
         "historical_cutoff": historical_cutoff,
         "candidate_count": len(entries),
@@ -339,11 +345,12 @@ def _safe_result(
     }
 
 
-def _require_schema_32(conn: sqlite3.Connection) -> None:
+def _require_schema_32(conn: sqlite3.Connection) -> int:
     row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
     value = int(_row_value(row)) if row is not None else 0
-    if value != SCHEMA_VERSION:
-        raise RuntimeError("identity_collision_requires_schema_32")
+    if value not in SUPPORTED_IDENTITY_SCHEMA_VERSIONS:
+        raise RuntimeError("identity_collision_requires_schema_32_or_33")
+    return value
 
 
 def _require_clean_connection(conn: sqlite3.Connection, action: str) -> None:

@@ -1,3 +1,4 @@
+from tests.closure_legacy_fixture import legacy_begin
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,7 +10,7 @@ class ClosureChoiceTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(); self.root = Path(self.tmp.name).resolve()
         self.source = self.root / "fixture.txt"; self.source.write_text("synthetic fixture")
         self.store = Store(self.root / "activity.sqlite")
-        self.task = self.store.begin({"platform": "codex", "session": "fixture", "turn": "original",
+        self.task = legacy_begin(self.store, {"platform": "codex", "session": "fixture", "turn": "original",
                   "objective": "isolated choice contract", "scope_root": str(self.root), "complex": True})["task_id"]
 
     def tearDown(self): self.store.conn.close(); self.tmp.cleanup()
