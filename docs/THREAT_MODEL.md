@@ -4,8 +4,7 @@ Personal AI Monitor handles screen-derived personal context. The security goal
 is to help one person recall their own work without creating a durable or
 shareable surveillance record.
 
-This model covers the source Open Alpha. It does not claim consumer-grade
-hardening for a signed public app release.
+The public browser workbench defaults to bundled synthetic data and binds to IPv4 loopback. The assets below concern optional Core integrations with real local data.
 
 ## Intended Use And Non-Goals
 

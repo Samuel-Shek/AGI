@@ -3,6 +3,8 @@
 Personal AI Monitor handles highly sensitive local activity data. Privacy behavior is the
 product contract, not an optional implementation detail.
 
+The public web example reads its bundled synthetic dataset and stores drafts locally. It does not start the optional collection and integration paths described below.
+
 ## Intended Use
 
 Personal AI Monitor is for personal, voluntary, local context recall on the user's own

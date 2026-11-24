@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import re
-import hashlib
 import json
 import os
 import subprocess
@@ -14,6 +13,9 @@ RUNTIME_PATH_RE = re.compile(
     r"(^|/)(core/data|data/activity\.sqlite|data/ha_packages|data/raw_vault)(/|$)"
 )
 BLOCKED_SUFFIXES = {
+    ".dmg",
+    ".pkg",
+    ".mpkg",
     ".sqlite",
     ".sqlite3",
     ".db",
@@ -45,15 +47,6 @@ FORBIDDEN_DIRECTORY_PARTS = {
     "raw_vault",
     "state",
 }
-ALLOWED_IMAGE_RE = re.compile(
-    r"^apps/PersonalAIMonitorMenuBar/.*/(?:AppIcon|icon[_-]?[0-9]+x[0-9]+|Icon)[^/]*\.(?:png|icns)$",
-    re.IGNORECASE,
-)
-# Approved source artwork, bound to bytes rather than a general image directory.
-APP_ICON_SOURCE = "assets/agi/AGI-app-icon.png"
-APP_ICON_SHA256 = "c75198611624773611c2acd7763884b7f05206af849328f22475708b4ea84100"
-APP_ICON_COMPILED = "assets/agi/AGI-app-icon.icns"
-APP_ICON_COMPILED_SHA256 = "bf03ece61c6900917cbf6f757638f204e6e8e4345fd955c5621eb93a6c515ffc"
 EXTENSION_FORBIDDEN_PERMISSIONS = {
     "history",
     "bookmarks",
@@ -98,11 +91,11 @@ def main() -> int:
     root = Path(__file__).resolve().parents[1]
     findings, checked, source = scan_root(root)
     if findings:
-        print("Personal AI Monitor release privacy scan failed:", file=sys.stderr)
+        print("PSI release privacy scan failed:", file=sys.stderr)
         for finding in findings:
             print(f"- {finding}", file=sys.stderr)
         return 1
-    print(f"Personal AI Monitor release privacy scan passed ({checked} {source} files checked).")
+    print(f"PSI release privacy scan passed ({checked} {source} files checked).")
     return 0
 
 
@@ -190,15 +183,8 @@ def _is_forbidden_runtime_file(rel: str, path: Path) -> bool:
         return True
     if any(part in FORBIDDEN_DIRECTORY_PARTS for part in Path(rel).parts):
         return True
-    if rel in {APP_ICON_SOURCE, APP_ICON_COMPILED}:
-        try:
-            return (path.is_symlink() or not path.is_file() or path.stat().st_size > 4 * 1024 * 1024
-                    or hashlib.sha256(path.read_bytes()).hexdigest() !=
-                    (APP_ICON_SHA256 if rel == APP_ICON_SOURCE else APP_ICON_COMPILED_SHA256))
-        except OSError:
-            return True
-    if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".heic", ".icns"}:
-        return not ALLOWED_IMAGE_RE.match(rel)
+    if any(part.lower().endswith(".app") for part in Path(rel).parts):
+        return True
     if path.suffix.lower() in BLOCKED_SUFFIXES:
         return True
     return False

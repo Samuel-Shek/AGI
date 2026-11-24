@@ -1,8 +1,6 @@
 # Architecture
 
-Personal AI Monitor is intentionally local-first. The first public version separates the
-native macOS app shell from the local `personal-ai-monitor-core` engine and keeps HA as an
-optional export path.
+A browser connects to the loopback Python server in `web/`. By default the server reads a synthetic fixture and keeps drafts in a temporary directory. The optional, separately configured Core uses the source and privacy controls below.
 
 ```mermaid
 flowchart TD
@@ -35,8 +33,7 @@ flowchart TD
 
 ## Components
 
-- `apps/PersonalAIMonitorMenuBar`: native macOS menu bar Alpha shell. It calls the core
-  command channel and does not read SQLite tables directly.
+- `web/`: the browser interface, loopback server, fixture reader and private local draft store. Live mode reads through the Core command channel.
 - `activity_mvp.macos_probe`: macOS context and keyframe adapters.
 - `activity_mvp.privacy`: local classification and redaction rules.
 - `activity_mvp.pipeline`: ingestion, timeline, search, and coverage records.

@@ -62,7 +62,6 @@ python3 -B -m activity_mvp.attention_center --db data/activity.sqlite source-sea
 
 - Core：`python3 -B -m unittest discover -s tests`（在 `core` 下）。
 - 自主进化：同上（在 `core/evolution` 下）。
-- Swift：`tools/run-swift-release-tests.sh` 及 `swift run --package-path apps/PersonalAIMonitorMenuBar PAMInteractionModelChecks`。
 - 发布检查：`python3 tools/release_privacy_scan.py`；通过后从干净提交构建。
 - 本机验收另行核对安装版本、浅深色、小窗口、键盘、正文和实际 Codex 接收，单元测试不能代替这些证据。
 

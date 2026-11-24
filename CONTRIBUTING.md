@@ -7,8 +7,10 @@ employee monitoring, classroom monitoring, or team administration.
 ## Development
 
 ```bash
-cd core
-python3 -m unittest discover -s tests
+python3 -B -m unittest discover -s web/tests
+node web/tests/frontend_check.js web/static
+(cd core && python3 -B -m unittest discover -s tests -p 'test_public_snapshot.py')
+(cd core && python3 -B -m unittest tests.test_recovery_provenance tests.test_release_evidence)
 ```
 
 Before opening a pull request:

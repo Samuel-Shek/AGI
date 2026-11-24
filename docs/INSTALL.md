@@ -1,52 +1,33 @@
-# Development and installation
+# Run PSI in a browser
 
-This is an experimental source release. Do not point a development checkout at
-an existing production database or replace an installed service during setup.
-No installer, credentials, runtime policies, or operating-system permissions are
-provided by cloning this repository.
-
-## Requirements
-
-- macOS for the native app and platform-specific helpers.
-- Python 3.12 or later for the CLI and fixture demo. The native workbench and live Core adapter look for the python.org Framework interpreter at `/Library/Frameworks/Python.framework/Versions/3.12/bin/python3`. The core has no mandatory third-party Python packages.
-- Swift 5.9 or later, with an Apple SDK or Xcode for native builds.
-
-## Inspect without collecting
-
-From the repository root:
-
-```bash
-python3 -I -S -B core/pam_isolated_launcher.py --help
-python3 tools/release_privacy_scan.py
-swift build --package-path apps/PersonalAIMonitorMenuBar
-```
-
-Build output is local development output. It is not a signed or notarized
-release and must not be copied over an existing installed app as a shortcut.
-
-## Core checks
-
-Run the portable checks listed in `.github/workflows/ci.yml`. The complete test
-collection is also retained, but some suites require the optional operator
-integrations documented in [public source scope](PUBLIC_SOURCE_SCOPE.md).
-
-The source-admission package reads its configuration from
-`~/Library/Application Support/AGI/source-governance`. No configuration is
-created automatically. An absent policy admits no personal sources; an absent
-conversation grant permits no conversation reads. Keep any future policy file
-private and outside version control.
-
-Starting collection, enabling a model, writing memory, or granting repair
-permissions are separate setup steps. Review the corresponding source and
-privacy documentation before opting in. This release does not configure those
-steps or install a background service for you.
+The local workbench uses Python 3.12 or later on macOS or Linux. The Python standard library is sufficient. Run the commands below from the root of the source checkout.
 
 ## Workbench demo
 
-From the repository root, start the local web workbench with synthetic data.
-Open the printed loopback URL. The command creates a separate directory for
-drafts. Press Ctrl+C to stop the demo.
-
-```bash
-python3 -B apps/PSISyncCenter/psi_sync_center.py --fixture apps/PSISyncCenter/tests/fixtures/demo.json --data-dir "$(mktemp -d)" --standalone --port 8767
+```sh
+python3 -B web/psi_sync_center.py
 ```
+
+Open **[http://127.0.0.1:8767/](http://127.0.0.1:8767/)** on this computer. The default dataset contains fictional questions, evidence and processing records. Choose a question, type a draft and switch to another question and back to see your draft again. The session uses a fresh temporary directory. Ctrl+C stops the server and releases that directory on normal exit.
+
+To keep example drafts across restarts, provide a dedicated directory that you own. The workbench creates it with private permissions if necessary.
+
+```sh
+python3 -B web/psi_sync_center.py --demo --data-dir ~/.psi-demo
+```
+
+If the default port is occupied, keep the existing service running and choose a different port. Open the address printed by the command.
+
+```sh
+python3 -B web/psi_sync_center.py --port 8877
+```
+
+Use `--fixture PATH` for your own synthetic dataset in the [example format](../web/tests/fixtures/demo.json). Fixture mode uses isolated local records and never hands a reply to an external agent.
+
+## Existing local Core
+
+On a Mac already configured with a compatible, separately authorized PSI Core, `--live` explicitly selects that integration. The workbench reads through the existing Core controller and its grants. The demo and its temporary storage are independent of that setup. See the [source scope](PUBLIC_SOURCE_SCOPE.md) for integration limits.
+
+## Development checks
+
+The [public workflow](../.github/workflows/ci.yml) lists the web, privacy and portable Core checks. Use synthetic inputs and a fresh working directory for tests.

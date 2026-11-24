@@ -9099,83 +9099,12 @@ class CoreFlowTests(CoreFixture):
         browser_manifest = json.loads(
             (repo_root / "core" / "browser_extension" / "manifest.json").read_text(encoding="utf-8")
         )
-        build_wrapper = (repo_root / "scripts" / "build-macos-app.sh").read_text(
-            encoding="utf-8"
-        )
-        build_implementation = (
-            repo_root / "scripts" / "build-macos-app-impl.sh"
-        ).read_text(encoding="utf-8")
-
         self.assertEqual(CORE_VERSION, "0.9.1")
         self.assertEqual(pyproject["project"]["version"], CORE_VERSION)
         self.assertEqual(browser_manifest["version"], CORE_VERSION)
         self.assertEqual(AI_CONNECTOR_VERSION, CORE_VERSION)
         self.assertEqual(AI_HANDOFF_VERSION, CORE_VERSION)
         self.assertEqual(REPORT_CONTEXT_VERSION, CORE_VERSION)
-        self.assertIn('MARKETING_VERSION="0.9.1"', build_implementation)
-        self.assertNotIn("PAM_APP_VERSION", build_wrapper + build_implementation)
-        self.assertIn('SWIFT_SDK_PATH="${PAM_TRUSTED_SWIFT_SDK:-}"', build_implementation)
-        self.assertIn("PAM_TRUSTED_SWIFT_SDK", build_wrapper)
-        self.assertNotIn(
-            'SWIFT_SDK_PATH="${PAM_SWIFT_SDK',
-            build_wrapper + build_implementation,
-        )
-        self.assertIn("PAM_SWIFT_SDK SDKROOT", build_implementation)
-        self.assertIn("--disable-sandbox", build_implementation)
-        self.assertIn("--manifest-cache none", build_implementation)
-        self.assertIn("CLANG_MODULE_CACHE_PATH", build_implementation)
-        self.assertIn('shasum -a 256 -c AGI-app-icon.sha256', build_implementation)
-        self.assertIn('/bin/cp "$ROOT_DIR/assets/agi/AGI-app-icon.icns" "$ICNS_FILE"', build_implementation)
-        self.assertNotIn('/usr/bin/iconutil', build_implementation)
-        self.assertTrue((repo_root / "assets/agi/AGI-app-icon.icns").is_file())
-        self.assertIn(
-            "<key>CFBundleIconFile</key>\n  <string>AppIcon.icns</string>",
-            build_implementation,
-        )
-
-
-    def test_menu_bar_label_does_not_embed_periodic_timeline(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
-        app_source = (
-            repo_root
-            / "apps"
-            / "PersonalAIMonitorMenuBar"
-            / "Sources"
-            / "PersonalAIMonitorMenuBar"
-            / "main.swift"
-        ).read_text(encoding="utf-8")
-        native_source = (repo_root / "apps/PersonalAIMonitorMenuBar/Sources/PersonalAIMonitorMenuBar/NativeStatusMenu.swift").read_text()
-        self.assertNotIn("MenuBarExtra {", app_source)
-        self.assertNotIn("TimelineView", native_source)
-        self.assertIn("NSStatusBar.system.statusItem", native_source)
-        self.assertIn("runner.statusSnapshot.menuBarTitle(now: now)", native_source)
-        self.assertNotIn("NativeStatusMenu.shared.install()", app_source)
-
-
-    def test_information_insufficient_cards_have_no_answer_ui(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
-        app_source = (
-            repo_root
-            / "apps"
-            / "PersonalAIMonitorMenuBar"
-            / "Sources"
-            / "PersonalAIMonitorMenuBar"
-            / "main.swift"
-        ).read_text(encoding="utf-8")
-
-        self.assertIn(
-            "ActivityConfirmationCardInteractionPolicy.showsAnswerActions",
-            app_source,
-        )
-        self.assertIn(
-            "无需回答；系统只保留这条低打扰线索",
-            app_source,
-        )
-        self.assertIn(
-            "|| !ActivityConfirmationCardInteractionPolicy.showsAnswerActions(",
-            app_source,
-        )
-
 
     def test_release_privacy_scan_passes_clean_candidate_tree(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]

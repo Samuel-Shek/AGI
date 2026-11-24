@@ -1,7 +1,7 @@
 # Public source scope
 
 PSI retains the original AGI repository address. This repository is a clean source snapshot with no private commit history.
-It preserves the app, core algorithms, controller boundaries, tests, assets,
+It publishes the local browser workbench, Python Core algorithms, controller boundaries, tests, artwork,
 AGPL license, and third-party notices. Personal facts, private deployment notes,
 live policies, credentials, runtime records, and private schedule registrations
 are excluded.
@@ -32,8 +32,7 @@ unavailable. Do not weaken a gate merely to make a local demonstration pass.
 
 ## Validation limits
 
-The portable CI checks, full operator integration tests, application build,
-installation, and natural usefulness are different stages. Public CI does not
+Public checks cover the browser workbench and selected portable Core contracts. Operator integration and everyday usefulness require separate validation. Public CI does not
 claim complete production acceptance. No private test receipt or installed-app
 state is reused as proof for this snapshot.
 

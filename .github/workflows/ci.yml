@@ -6,6 +6,19 @@ on:
 permissions:
   contents: read
 jobs:
+  web-workbench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Check public source and distribution boundaries
+        run: python3 -B tools/release_privacy_scan.py
+      - name: Start the local demo and test the workbench
+        run: python3 -B -m unittest discover -s web/tests
+      - name: Exercise browser interactions
+        run: node web/tests/frontend_check.js web/static
   portable-core:
     runs-on: macos-15
     steps:
@@ -13,22 +26,11 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: '3.12'
-      - name: Privacy and extension boundaries
-        run: python3 -B tools/release_privacy_scan.py
-      - name: Portable core boundaries
+      - name: Portable Core and recovery boundaries
         working-directory: core
-        run: python3 -B -m unittest discover -s tests -p 'test_public_snapshot.py'
-      - name: Workbench and recovery boundaries
         run: |
-          python3 -B -m unittest discover -s apps/PSISyncCenter/tests
-          node apps/PSISyncCenter/tests/frontend_check.js apps/PSISyncCenter/static
-          (cd core && python3 -B -m unittest tests.test_recovery_provenance)
+          python3 -B -m unittest discover -s tests -p 'test_public_snapshot.py'
+          python3 -B -m unittest tests.test_recovery_provenance tests.test_release_evidence
       - name: Evolution engine
         working-directory: core/evolution
         run: python3 -B -m unittest discover -s tests
-  swift-build:
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-      - name: Build native application source
-        run: swift build --package-path apps/PersonalAIMonitorMenuBar

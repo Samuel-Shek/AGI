@@ -474,17 +474,13 @@ class ProjectAutonomyTests(unittest.TestCase):
         (repo/'node_modules/outside').symlink_to(self.root/'ledger')
         with self.assertRaises(PermissionError):repair.copy_dependencies(repo,self.root/'candidate')
 
-    def test_static_icon_privacy_allowance_is_bound_to_exact_bytes(self):
-        import runpy,hashlib
-        repo=Path(__file__).resolve().parents[2]
-        scan=runpy.run_path(str(repo/'tools/release_privacy_scan.py'))
-        path=repo/'assets/agi/AGI-app-icon.icns';rule=scan['_is_forbidden_runtime_file']
-        self.assertFalse(rule('assets/agi/AGI-app-icon.icns',path))
-        changed=self.root/'changed.icns';changed.write_bytes(path.read_bytes()+b'changed')
-        self.assertTrue(rule('assets/agi/AGI-app-icon.icns',changed))
-        self.assertTrue(rule('assets/agi/unapproved.icns',path))
-        for line in (repo/'assets/agi/AGI-app-icon.sha256').read_text().splitlines():
-            expected,name=line.split();self.assertEqual(hashlib.sha256((repo/'assets/agi'/name).read_bytes()).hexdigest(),expected)
+    def test_public_scan_rejects_desktop_artwork_and_installers(self):
+        import runpy
+        repo = Path(__file__).resolve().parents[2]
+        scan = runpy.run_path(str(repo / 'tools' / 'release_privacy_scan.py'))
+        for name in ('icon.png', 'icon.icns', 'preview.dmg', 'preview.pkg', 'Preview.app/Contents/Info.plist'):
+            with self.subTest(name=name):
+                self.assertTrue(scan['_is_forbidden_runtime_file'](name, self.root / name))
 
     def test_meeting_readiness_uses_fresh_private_native_snapshot(self):
         with patch.object(Path,'home',return_value=self.root):
@@ -576,34 +572,6 @@ class ProjectAutonomyTests(unittest.TestCase):
             self.assertTrue(image.exists())
         self.assertFalse(image.exists())
         self.assertIsNone(repair._image_mount(image,volume))
-
-    def test_isolated_build_root_refuses_relative_shared_or_alias_paths(self):
-        script=Path(__file__).resolve().parents[2]/'scripts/build-macos-app.sh'
-        shared=self.root/'shared';shared.mkdir(mode=0o755);shared.chmod(0o755)
-        private=self.root/'private';private.mkdir(mode=0o700)
-        alias=self.root/'alias-build';alias.symlink_to(private)
-        for root in ('relative',str(shared),str(alias)):
-            result=subprocess.run(['/bin/sh',str(script),'--isolated-build-root',root,'--provenance-only'],capture_output=True,text=True,timeout=15)
-            self.assertNotEqual(result.returncode,0)
-            self.assertIn('isolated build root',result.stderr)
-
-    @unittest.skipUnless(os.environ.get('AGI_PROJECT_REAL_SANDBOX_TEST')=='1','explicit real OS sandbox gate')
-    def test_real_isolated_build_provenance_preserves_scratch_sibling(self):
-        origin=Path(__file__).resolve().parents[2];repo=self.root/'build-fixture';repo.mkdir()
-        for name in ('scripts/build-macos-app.sh','scripts/build-macos-app-impl.sh'):
-            target=repo/name;target.parent.mkdir(exist_ok=True);shutil.copy2(origin/name,target)
-        (repo/'scripts/build-macos-app-impl.sh').chmod(0o644)
-        (repo/'core/activity_mvp').mkdir(parents=True);(repo/'core/tools').mkdir()
-        (repo/'core/activity_mvp/sample.py').write_text('VALUE=1\n')
-        (repo/'core/tools/sample.swift').write_text('let value = 1\n')
-        (repo/'core/pyproject.toml').write_text('[project]\nname="fixture"\n')
-        subprocess.run(['/usr/bin/git','init',str(repo)],check=True,capture_output=True)
-        projects.git(repo,'add','.');projects.git(repo,'-c','user.name=Test','-c','user.email=test@localhost','commit','-m','fixture')
-        scratch=self.root/'sandbox-build-fixture';scratch.mkdir(mode=0o700)
-        retained=scratch/'retained';retained.write_text('keep this')
-        result=repair.sandbox_check(self.store,repo,['/bin/sh','scripts/build-macos-app.sh','--provenance-only','--isolated-build-root',str(scratch)],timeout=45,build=True)
-        self.assertEqual(result.returncode,0,result.stderr);self.assertIn('git_dirty=false',result.stdout)
-        self.assertEqual(retained.read_text(),'keep this')
 
     @unittest.skipUnless(os.environ.get('AGI_PROJECT_REAL_SANDBOX_TEST')=='1','explicit real OS sandbox gate')
     def test_real_js_ast_admission_allows_text_but_not_effects(self):

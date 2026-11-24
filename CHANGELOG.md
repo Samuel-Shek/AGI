@@ -1,5 +1,10 @@
 # Public source changes
 
+## 2026-11-24 — Local web workbench
+
+- Run the public workbench in a browser with Python and the included fictional dataset. The default session keeps its drafts in a temporary directory.
+- Moved the web source to `web/` and retired the native desktop source, packaging scripts and preview build workflow from the current distribution.
+
 ## 2026-11-23 — PSI workbench and file history
 
 - Browse owner questions and processing records in the native app or the loopback workbench. Try the included synthetic fixture.

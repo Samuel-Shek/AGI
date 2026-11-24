@@ -2,66 +2,28 @@
 
 [中文说明](README.zh-CN.md)
 
-PSI (previously AGI) is an experimental macOS app for reviewing local work, tracking file changes,
-and managing evidence-backed improvement candidates. It combines a SwiftUI app
-with a Python core and evolved from Personal AI Monitor.
+PSI is a local web workbench for reviewing questions, decisions and processing records. Open a question to see its evidence, the proposed next step and your draft reply. The included example uses fictional records and runs in your browser with Python's standard library.
 
-The repository keeps its original GitHub address. Automated repair and reflection
-are experimental and still need evaluation in everyday use.
+## Run the workbench
 
-## What is included
+On macOS or Linux with Python 3.12 or later, run:
 
-- A native Mac app for recent activity, file history, decisions, and system status.
-- File history refreshes while visible and reports gaps in tracking.
-- A local workbench groups questions and processing records, saves drafts, and
-  can reopen a Codex discussion when the local integration is configured.
-- Local source admission, revocation, privacy filtering, and audit records.
-- Optional conversation reflection and controlled improvement workflows.
-- Core, Swift, and synthetic integration tests; browser-extension source.
-
-Screen capture requires explicit consent. Reflection, model use, memory writes,
-and software changes have separate controls. Missing source configuration admits
-no personal sources. No private policies, conversation history, credentials,
-runtime databases, screenshots, or installed binaries are included.
-
-## Start with the source
-
-You need macOS, Python 3.12 or later, and Swift 5.9 or later. See
-[development and installation](docs/INSTALL.md) for safe commands that use a new
-local data directory. There is no signed, notarized installer in this release.
-
-```bash
+```sh
 git clone https://github.com/Samuel-Shek/AGI.git
 cd AGI
-python3 -I -S -B core/pam_isolated_launcher.py --help
-swift build --package-path apps/PersonalAIMonitorMenuBar
+python3 -B web/psi_sync_center.py
 ```
 
-You can try the workbench with the included synthetic data. See the
-[local demo](docs/INSTALL.md#workbench-demo).
+Open **[http://127.0.0.1:8767/](http://127.0.0.1:8767/)** on the same computer. Select a question, inspect its evidence and try writing a draft. The example uses temporary local storage for this session. Press Ctrl+C in the terminal to stop it.
 
-The Python core uses the standard library. The source-admission helpers needed
-for core imports are bundled under `core/activity_mvp/source_governance`.
-The original operator-specific memory, scheduler, backup, and deployment adapters
-remain optional integrations. They require independently configured dependencies
-and grants; missing prerequisites must keep those operations disabled. See
-[public source scope](docs/PUBLIC_SOURCE_SCOPE.md).
+To keep drafts between sessions or choose another port, see [running the workbench](docs/INSTALL.md).
 
-## Development and privacy
+## Source and privacy
 
-Use synthetic data for tests and issues. Never attach real conversations,
-screenshots, databases, tokens, or personal activity logs. Run the
-[release privacy scan](tools/release_privacy_scan.py) before publishing changes.
-See [security](SECURITY.md), [privacy](docs/PRIVACY.md), and
-[contributing](CONTRIBUTING.md).
+The browser connects only to the loopback server. The default run uses the bundled example without reading personal activity, connecting to a local agent or registering a background service. Contributors can also inspect the Python Core and its source-admission, privacy and audit controls. Connecting an existing Core requires explicit setup. [Public source scope](docs/PUBLIC_SOURCE_SCOPE.md) · [Privacy](docs/PRIVACY.md)
 
-Portable checks cover selected core boundaries and the evolution engine.
-The complete operator-integration and installed-app acceptance procedures are
-separate; a passing subset does not certify every workflow. The project remains
-experimental, especially its natural repair and reflection outcomes.
+The automated checks exercise the web interface and selected Core contracts with synthetic inputs. Real-world benefits of the experimental reflection and repair workflows still require separate evidence. [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
 
 ## License
 
-[AGPL-3.0-only](LICENSE). Third-party notices and the separately licensed Hermes
-component are retained in [NOTICE](NOTICE) and
-[the vendor provenance](core/evolution/ai_ceo/vendor/PROVENANCE.json).
+[AGPL-3.0-only](LICENSE). Third-party notices and the separately licensed Hermes component are listed in [NOTICE](NOTICE) and the [vendor provenance](core/evolution/ai_ceo/vendor/PROVENANCE.json).

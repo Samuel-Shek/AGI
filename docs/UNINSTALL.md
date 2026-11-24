@@ -1,10 +1,5 @@
-# Remove a development checkout
+# Stop the workbench
 
-If you only cloned and built this source, stop any process you started and remove
-your development checkout and its build output. Cloning and the documented build
-commands do not install a background service.
+Press Ctrl+C in the terminal that started the demo. A normal exit cleans up the temporary demo store. If you supplied `--data-dir`, that directory retains your drafts.
 
-If you separately configured an installed app, service, or data directory, first
-identify exactly what you installed. Stop that specific service using its own
-registration. Review the data and keep any records you need before removing it.
-Do not apply deletion commands from another person's deployment.
+The documented quick start only runs the local server for the foreground session. You can keep or remove the source checkout and any explicitly chosen draft directories independently. Check their contents before removing anything.

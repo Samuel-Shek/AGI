@@ -1,5 +1,3 @@
-The system status page separates background service, screen capture, and file tracking, with compact statistics and collapsed details. AGI visual-model review is retired; local OCR and privacy protection remain. Historical records and privacy-only legacy cleanup are retained. Code recovery point: `archive/vlm-before-retirement-20261001-212137`.
-
 # Personal AI Monitor Core
 
 This directory contains the runnable Python core for Personal AI Monitor, a local-first
@@ -11,8 +9,7 @@ The current core validates the personal live-runtime loop:
 keyframe capture -> Privacy Firewall -> SQLite/FTS -> local recall -> optional HA Source Package -> deletion/revocation
 ```
 
-It is not the final signed macOS app. The native menu bar Alpha shell lives in
-`../apps/PersonalAIMonitorMenuBar`.
+The [browser workbench](../web/README.md) can run independently with its included synthetic data. The sections below describe the separate Core.
 
 ## 0.4.0 Source Overlay (2026-08-01)
 

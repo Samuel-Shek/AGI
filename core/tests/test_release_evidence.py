@@ -42,14 +42,11 @@ class ReleaseEvidenceTests(unittest.TestCase):
         self.temp.cleanup()
 
     def _source_paths(self) -> tuple[Path, Path]:
-        tests = (
-            REPO_ROOT
-            / "apps/PersonalAIMonitorMenuBar/Tests/PAMInteractionModelTests"
-        )
-        return (
-            tests / "Phase2ContextModelsTests.swift",
-            tests / "Phase2ContextModelsSwiftTestingTests.swift",
-        )
+        xctest = self.root / "SampleTests.swift"
+        swift = self.root / "SampleSuite.swift"
+        xctest.write_text("func testLocalSample() {}\n")
+        swift.write_text('@Test("Local sample")\nfunc localSample() {}\n')
+        return xctest, swift
 
     def _write_xunit(
         self,
@@ -103,43 +100,6 @@ class ReleaseEvidenceTests(unittest.TestCase):
             if index == 0 and case_skipped:
                 ET.SubElement(case, "skipped")
         ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
-
-    def test_tracked_baseline_is_exactly_current_76_plus_31_source_set(self) -> None:
-        baseline_path = REPO_ROOT / "tools" / "swift-release-test-baseline.json"
-        baseline = swift_report.load_baseline_tests(baseline_path)
-        xctest_source, swift_source = self._source_paths()
-        declared = swift_report.extract_expected_tests(xctest_source, swift_source)
-        self.assertEqual(
-            swift_report.validate_source_against_baseline(declared, baseline),
-            baseline,
-        )
-        self.assertEqual(sum(test.kind == "xctest" for test in baseline), 76)
-        self.assertEqual(sum(test.kind == "swift-testing" for test in baseline), 31)
-
-        available = self.root / "available.json"
-        swift_report.write_expected_tests(
-            available,
-            baseline,
-            declared_tests=baseline,
-            swift_testing_module="available",
-        )
-        self.assertEqual(swift_report.load_expected_tests(available), baseline)
-
-        unavailable_rows = [test for test in baseline if test.kind == "xctest"]
-        unavailable = self.root / "unavailable.json"
-        swift_report.write_expected_tests(
-            unavailable,
-            unavailable_rows,
-            declared_tests=baseline,
-            swift_testing_module="unavailable",
-        )
-        self.assertEqual(swift_report.load_expected_tests(unavailable), unavailable_rows)
-
-        with self.assertRaisesRegex(
-            swift_report.ReportError,
-            "swift_test_source_baseline_mismatch",
-        ):
-            swift_report.validate_source_against_baseline(declared[:-1], baseline)
 
     def test_duplicate_swift_display_alias_is_rejected(self) -> None:
         rows = [
@@ -244,253 +204,13 @@ class ReleaseEvidenceTests(unittest.TestCase):
         ):
             swift_report.classify_testing_probe(probe, 1)
 
-    def _write_fake_swift_release_tools(self, fake_bin: Path) -> None:
-        fake_bin.mkdir()
-        fake_xcrun = fake_bin / "xcrun"
-        fake_swift = fake_bin / "swift"
-        fake_xcrun.write_text(
-            "#!/bin/sh\n"
-            'printf "%s\\n" "$*" >>"$PAM_FAKE_XCRUN_LOG"\n'
-            'if [ "$1" = "--find" ] && [ "$2" = "xctest" ]; then\n'
-            "  printf '/synthetic/xctest\\n'\n"
-            "  exit 0\n"
-            "fi\n"
-            "exit 99\n",
-            encoding="utf-8",
-        )
-        fake_swift.write_text(
-            """#!/usr/bin/env python3
-import json
-import os
-import sys
-import xml.etree.ElementTree as ET
-from pathlib import Path
-
-args = sys.argv[1:]
-scenario = os.environ["PAM_FAKE_SWIFT_SCENARIO"]
-baseline = json.loads(Path(os.environ["PAM_FAKE_BASELINE"]).read_text(encoding="utf-8"))
-xctests = baseline["xctest"]
-swift_tests = [row["identifier"] for row in baseline["swift_testing"]]
-with Path(os.environ["PAM_FAKE_SWIFT_LOG"]).open("a", encoding="utf-8") as handle:
-    handle.write(" ".join(args) + "\\n")
-
-def write_xunit(
-    path,
-    names,
-    *,
-    kind="xctest",
-    case_status="",
-    namespaced_case_status="",
-    uppercase_case_status="",
-):
-    root = ET.Element(
-        "testsuites",
-        tests=str(len(names)),
-        failures="0",
-        errors="0",
-        skipped="0",
-    )
-    suite = ET.SubElement(
-        root,
-        "testsuite",
-        name="PAMInteractionModelTests",
-        tests=str(len(names)),
-        failures="0",
-        errors="0",
-        skipped="0",
-    )
-    for index, name in enumerate(names):
-        if kind == "xctest":
-            rendered_name = name
-            classname = "PAMInteractionModelTests.Phase2ContextModelsTests"
-        else:
-            rendered_name = f"{name}()"
-            classname = "PAMInteractionModelTests"
-        if scenario in {"unicode_xunit_identity", "combined_unicode_bypass"}:
-            rendered_name = f"\u00a0{rendered_name}\u3000"
-            classname = "OtherModule.OtherSuite"
-        attributes = {"name": rendered_name, "classname": classname}
-        if case_status and index == 0:
-            attributes["status"] = case_status
-        if namespaced_case_status and index == 0:
-            attributes["{urn:pam:adversarial}status"] = namespaced_case_status
-        if uppercase_case_status and index == 0:
-            attributes["Status"] = uppercase_case_status
-        ET.SubElement(suite, "testcase", attributes)
-    if scenario == "extra_empty_suite":
-        ET.SubElement(
-            root,
-            "testsuite",
-            name="UnexpectedEmptySuite",
-            tests="0",
-            failures="0",
-            errors="0",
-            skipped="0",
-        )
-    ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
-
-if args[-1] in {"list", "--list-tests"}:
-    if scenario == "listing_failure":
-        raise SystemExit(7)
-    print("Build complete! (0.01s)")
-    for name in xctests:
-        print(f"PAMInteractionModelTests.Phase2ContextModelsTests/{name}")
-    for name in swift_tests:
-        print(f"PAMInteractionModelTests.{name}()")
-    if scenario in {"unicode_listing_bypass", "combined_unicode_bypass"}:
-        print("\u200bPAMInteractionModelTests.OtherSuite/testUnexpected")
-    raise SystemExit(0)
-
-if "--xunit-output" not in args:
-    raise SystemExit(8)
-if scenario == "execution_nonzero":
-    print("synthetic Swift test execution failure", file=sys.stderr)
-    raise SystemExit(9)
-
-report = Path(args[args.index("--xunit-output") + 1])
-write_xunit(
-    report,
-    xctests,
-    kind="xctest",
-    case_status="failed" if scenario == "failed_xunit_status" else "",
-    namespaced_case_status=(
-        "failed" if scenario == "namespaced_failed_xunit_status" else ""
-    ),
-    uppercase_case_status=(
-        "failed" if scenario == "uppercase_failed_xunit_status" else ""
-    ),
-)
-if scenario != "summary_only_xctest":
-    for index, name in enumerate(xctests, start=1):
-        if scenario in {"unicode_progress_bypass", "combined_unicode_bypass"}:
-            print(
-                f"[{index}/{len(xctests)}]\u00a0Testing "
-                f"OtherModule.OtherSuite/testUnexpected{index}"
-            )
-        else:
-            print(
-                f"[{index}/{len(xctests)}] Testing "
-                f"PAMInteractionModelTests.Phase2ContextModelsTests/{name}"
-            )
-if scenario in {"unicode_progress_bypass", "combined_unicode_bypass"}:
-    print(f"Executed {len(xctests)} tests, with 0 failures")
-if scenario == "summary_only_xctest":
-    print(f"Executed {len(xctests)} tests, with 0 failures")
-if scenario in {"unicode_failure_bypass", "combined_unicode_bypass"}:
-    print("\u00a0Testing failed: hidden semantic failure")
-    print("\u00a0✘ hidden semantic failure")
-if "--filter" in args:
-    if "--disable-swift-testing" not in args or scenario in {"unexpected_empty_filtered_swift_report", "nonempty_filtered_swift_report"}:
-        filtered_swift_tests = (
-            swift_tests[:1]
-            if scenario == "nonempty_filtered_swift_report"
-            else []
-        )
-        write_xunit(
-            report.with_name("xctest-swift-testing.xml"),
-            filtered_swift_tests,
-            kind="swift-testing",
-        )
-        print(
-            f"✔ Test run with {len(filtered_swift_tests)} tests "
-            "passed after 0.1 seconds."
-        )
-else:
-    if scenario != "missing_swift_report":
-        write_xunit(
-            report.with_name("full-swift-testing.xml"),
-            swift_tests,
-            kind="swift-testing",
-        )
-    print(f"✔ Test run with {len(swift_tests)} tests in 1 suite passed after 0.1 seconds.")
-""",
-            encoding="utf-8",
-        )
-        fake_xcrun.chmod(0o755)
-        fake_swift.chmod(0o755)
-
-    def test_required_testing_policy_uses_exact_package_context_evidence(self) -> None:
-        fake_bin = self.root / "bin"
-        self._write_fake_swift_release_tools(fake_bin)
-        scenarios = {
-            "success": True,
-            "listing_failure": False,
-            "execution_nonzero": False,
-            "unexpected_empty_filtered_swift_report": False,
-            "nonempty_filtered_swift_report": False,
-            "missing_swift_report": False,
-            "failed_xunit_status": False,
-            "namespaced_failed_xunit_status": False,
-            "uppercase_failed_xunit_status": False,
-            "unicode_xunit_identity": False,
-            "unicode_listing_bypass": False,
-            "unicode_progress_bypass": False,
-            "unicode_failure_bypass": False,
-            "combined_unicode_bypass": False,
-            "extra_empty_suite": False,
-            "summary_only_xctest": False,
-        }
-        for scenario, expected_success in scenarios.items():
-            with self.subTest(scenario=scenario):
-                evidence = self.root / f"evidence-{scenario}"
-                evidence.mkdir()
-                xcrun_log = self.root / f"xcrun-{scenario}.log"
-                swift_log = self.root / f"swift-{scenario}.log"
-                env = dict(os.environ)
-                env.update(
-                    {
-                        "PATH": f"{fake_bin}:{env['PATH']}",
-                        "PAM_FAKE_XCRUN_LOG": str(xcrun_log),
-                        "PAM_FAKE_SWIFT_LOG": str(swift_log),
-                        "PAM_FAKE_SWIFT_SCENARIO": scenario,
-                        "PAM_FAKE_BASELINE": str(
-                            REPO_ROOT / "tools/swift-release-test-baseline.json"
-                        ),
-                        "PAM_REQUIRE_SWIFT_TESTING": "1",
-                        "PAM_SWIFT_TEST_EVIDENCE_DIR": str(evidence),
-                    }
-                )
-                result = subprocess.run(
-                    ["bash", str(REPO_ROOT / "tools/run-swift-release-tests.sh")],
-                    cwd=REPO_ROOT,
-                    env=env,
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                )
-                self.assertEqual(result.returncode == 0, expected_success, result.stderr)
-                self.assertNotIn("swiftc", xcrun_log.read_text(encoding="utf-8"))
-                probe = (evidence / "swift-testing-probe.log").read_text(
-                    encoding="utf-8"
-                )
-                self.assertIn("swift_testing_policy=required", probe)
-                self.assertIn(
-                    "validation=swiftpm_listing_and_exact_execution", probe
-                )
-                self.assertNotIn("swift_testing_module=available", probe)
-                gate_status = json.loads(
-                    (evidence / "gate-status.json").read_text(encoding="utf-8")
-                )
-                self.assertEqual(
-                    gate_status["status"], "passed" if expected_success else "failed"
-                )
-                if expected_success:
-                    summary = json.loads(
-                        (evidence / "summary.json").read_text(encoding="utf-8")
-                    )
-                    self.assertEqual(summary["expected_total"], 107)
-                    self.assertEqual(summary["executed_filtered_swift_testing"], 0)
-                    self.assertEqual(summary["executed_full_xctest"], 76)
-                    self.assertEqual(summary["executed_full_swift_testing"], 31)
-                elif scenario == "missing_swift_report":
-                    self.assertFalse((evidence / "full-swift-testing.xml").exists())
-                elif scenario == "unexpected_empty_filtered_swift_report":
-                    self.assertTrue((evidence / "xctest-swift-testing.xml").exists())
-
     def test_verifier_real_cli_smoke_for_manifest_and_probe(self) -> None:
         verifier = REPO_ROOT / "tools" / "verify_swift_test_report.py"
         xctest_source, swift_source = self._source_paths()
         expected_path = self.root / "expected-tests.json"
+        baseline = self.root / "baseline.json"
+        baseline.write_text(json.dumps({"version": 1, "xctest": ["testLocalSample"],
+                                        "swift_testing": [{"identifier": "localSample", "display_name": "Local sample"}]}))
         manifest = subprocess.run(
             [
                 sys.executable,
@@ -502,7 +222,7 @@ else:
                 "--swift-testing-source",
                 str(swift_source),
                 "--baseline",
-                str(REPO_ROOT / "tools" / "swift-release-test-baseline.json"),
+                str(baseline),
                 "--swift-testing-module",
                 "available",
             ],
@@ -515,13 +235,13 @@ else:
         self.assertEqual(
             json.loads(manifest.stdout),
             {
-                "swift-testing": 31,
+                "swift-testing": 1,
                 "swift_testing_module": "available",
-                "total": 107,
-                "xctest": 76,
+                "total": 2,
+                "xctest": 1,
             },
         )
-        self.assertEqual(len(swift_report.load_expected_tests(expected_path)), 107)
+        self.assertEqual(len(swift_report.load_expected_tests(expected_path)), 2)
 
         probe_path = self.root / "probe-cli.log"
         probe_path.write_text(
@@ -1388,18 +1108,15 @@ else:
         ):
             swift_report.verify(report, log, 1, expected_tests=expected)
 
-    def test_approved_icon_does_not_allow_substituted_or_unrelated_images(self) -> None:
-        rel = "assets/agi/AGI-app-icon.png"
-        original = REPO_ROOT / rel
-        self.assertFalse(privacy_scan._is_forbidden_runtime_file(rel, original))
-        self.assertTrue(privacy_scan._is_forbidden_runtime_file("assets/agi/screenshot.png", original))
-        candidate = self.root / rel
-        candidate.parent.mkdir(parents=True, exist_ok=True)
-        candidate.write_bytes(b"unapproved replacement")
-        self.assertTrue(privacy_scan._is_forbidden_runtime_file(rel, candidate))
-        candidate.unlink()
-        candidate.symlink_to(original)
-        self.assertTrue(privacy_scan._is_forbidden_runtime_file(rel, candidate))
+    def test_web_release_rejects_native_artifacts(self) -> None:
+        paths = ("artwork.png", "icon.icns", "PSI.dmg", "PSI.pkg", "PSI.app/Contents/Info.plist")
+        for name in paths:
+            path = self.root / name
+            path.parent.mkdir(exist_ok=True, parents=True)
+            path.write_bytes(b"synthetic artifact")
+        findings, _, _ = privacy_scan.scan_root(self.root)
+        for name in paths:
+            self.assertIn(f"forbidden runtime/build/state file: {name}", findings)
 
     def test_privacy_scan_redacts_values_and_has_no_fixture_whitelist(self) -> None:
         token = "sk-" + ("q" * 24)
@@ -1477,55 +1194,15 @@ else:
         self.assertIn("state/runtime.json", encoded)
         self.assertNotIn("PASSWORD=", encoded)
 
-    def test_ci_uses_pinned_actions_read_only_permissions_and_early_evidence(self) -> None:
-        for relative in (
-            "tools/run-swift-release-tests.sh",
-            "tools/verify_swift_test_report.py",
-            "tools/release_privacy_scan.py",
-        ):
-            script = REPO_ROOT / relative
-            self.assertTrue(script.stat().st_mode & 0o111, f"not executable: {relative}")
-            self.assertTrue(
-                script.read_bytes().startswith(b"#!"),
-                f"missing shebang: {relative}",
-            )
-
-        workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        checkout = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803"
-        setup_python = "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1"
-        upload = "actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f"
+    def test_ci_checks_web_and_core_with_pinned_read_only_actions(self) -> None:
+        workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text()
         self.assertIn("permissions:\n  contents: read", workflow)
-        self.assertGreaterEqual(workflow.count(checkout), 3)
-        self.assertIn(setup_python, workflow)
-        self.assertIn(upload, workflow)
-        self.assertNotIn("actions/checkout@v", workflow)
-        self.assertNotIn("actions/setup-python@v", workflow)
-        self.assertNotIn("actions/upload-artifact@v", workflow)
-        self.assertLess(
-            workflow.index("Initialize persistent Swift evidence"),
-            workflow.index("Record selected Swift toolchain"),
-        )
-        self.assertIn("pam-swift-release-tests/tests", workflow)
-        self.assertIn("if: always()", workflow)
-        self.assertIn("if-no-files-found: error", workflow)
+        self.assertIn("web/tests", workflow)
+        self.assertIn("test_public_snapshot.py", workflow)
+        self.assertIn("tools/release_privacy_scan.py", workflow)
         self.assertNotIn("continue-on-error", workflow)
-
-        gate = (REPO_ROOT / "tools/run-swift-release-tests.sh").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("swift-release-test-baseline.json", gate)
-        self.assertNotIn("MINIMUM_XCTESTS", gate)
-        self.assertNotIn("MINIMUM_SWIFT_TESTING_TESTS", gate)
-        self.assertIn("testing_probe_source=$'import Testing", gate)
-        self.assertIn("probe_strategy=required_expected_set", gate)
-        self.assertIn("validation=swiftpm_listing_and_exact_execution", gate)
-        self.assertIn("swift_testing_policy=required", gate)
-        self.assertIn("swift_testing_expected_set=available", gate)
-        self.assertIn('SWIFT_TESTING_MODULE="available"', gate)
-        self.assertIn('if [[ "${PAM_REQUIRE_SWIFT_TESTING:-0}" == "1" ]]; then', gate)
-        self.assertIn("verify_swift_testing_evidence", gate)
-        self.assertIn("full-swift-testing.xml", gate)
-        self.assertIn('pipeline_status=("${PIPESTATUS[@]}")', gate)
+        for action in (line for line in workflow.splitlines() if "uses:" in line):
+            self.assertRegex(action, r"uses: [\w/-]+@[a-f0-9]{40}$")
 
 
 if __name__ == "__main__":
