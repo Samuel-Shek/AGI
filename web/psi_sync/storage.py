@@ -5,15 +5,24 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import tempfile
 import threading
+import uuid
 
 MAX_FILE = 8 * 1024 * 1024
 
 
 class StorageError(ValueError):
     pass
+
+
+class DraftConflict(ValueError):
+    def __init__(self, draft, revision):
+        super().__init__('draft_conflict')
+        self.draft = draft
+        self.revision = revision
 
 
 def now():
@@ -34,6 +43,38 @@ def validate_directory(directory, forbidden=()):
                 continue
             raise StorageError('unsafe_storage')
     return path
+
+
+def store_draft(data, identifier, content, edit):
+    """Order same-page revisions, and reject writes based on a superseded page."""
+    revisions = data.setdefault('draft_versions', {})
+    current = revisions.get(identifier, '')
+    if edit is None:
+        if current and data['drafts'].get(identifier, '') != content:
+            raise DraftConflict(data['drafts'].get(identifier, ''), current)
+        data['drafts'][identifier] = content
+        return {'saved': True}
+    if not isinstance(edit, dict):
+        raise ValueError('invalid_draft_revision')
+    writer, seq, base = edit.get('writer'), edit.get('sequence'), edit.get('base')
+    if (not isinstance(writer, str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', writer) or type(seq) is not int
+            or not 0 < seq < 2**53 or not isinstance(base, str) or len(base) > 100):
+        raise ValueError('invalid_draft_revision')
+    revision = f'{writer}:{seq}'
+    if revision == current and data['drafts'].get(identifier, '') == content:
+        return {'saved': True, 'revision': revision}
+    current_writer, _, current_seq = current.rpartition(':')
+    if (current_writer == writer and seq <= int(current_seq)) or (current_writer != writer and base != current):
+        raise DraftConflict(data['drafts'].get(identifier, ''), current)
+    data['drafts'][identifier] = content
+    revisions[identifier] = revision
+    return {'saved': True, 'revision': revision}
+
+
+def clear_draft(data, identifier):
+    data['drafts'][identifier] = ''
+    if identifier in data.get('draft_versions', {}):
+        data['draft_versions'][identifier] = f'{uuid.uuid4()}:1'
 
 
 class LocalStore:
@@ -60,6 +101,11 @@ class LocalStore:
                         if row.get('author') != 'user' or not all(isinstance(row.get(k), str) for k in ('content', 'created_at', 'request_id')):
                             raise ValueError()
                 if any(not isinstance(k, str) or not isinstance(v, str) for k, v in value['drafts'].items()):
+                    raise ValueError()
+                versions = value.get('draft_versions', {})
+                if (not isinstance(versions, dict) or any(not isinstance(k,str) or k not in value['drafts']
+                        or not isinstance(v,str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,64}:[1-9][0-9]{0,15}',v)
+                        for k,v in versions.items())):
                     raise ValueError()
                 for row in value['actions']:
                     if not isinstance(row, dict) or not all(isinstance(row.get(k), str) for k in ('id', 'action', 'created_at', 'request_id')):

@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, urlsplit, unquote
 
 from .core_reader import ReadError, decode
 from .security import CSP, HOST, PORT, SecurityError, authorize, body_length
-from .storage import StorageError
+from .storage import DraftConflict, StorageError
 from .handoff import continue_in_codex, handoff_status
 
 STATIC = Path(__file__).resolve().parents[1] / 'static'
@@ -132,6 +132,9 @@ def handler_for(state, token, port=PORT):
                     self.reply({'message': '未找到'}, 404)
             except SecurityError:
                 self.reply({'message': '请求未通过本机校验'}, 403)
+            except DraftConflict as exc:
+                self.reply({'message': '已存草稿发生变化，请先核对两个版本。',
+                            'draft_conflict': {'content': exc.draft, 'revision': exc.revision}}, 409)
             except StorageError as exc:
                 message = ('记录已写入本机，但持久化确认失败；请重新读取核对。'
                            if str(exc) == 'storage_durability_unconfirmed'

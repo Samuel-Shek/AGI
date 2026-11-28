@@ -86,6 +86,34 @@ class PublicDemoTests(unittest.TestCase):
         self.assertEqual(status, 200)
         return json.loads(raw)
 
+    def test_draft_receipts_order_writes_across_reload_and_restart(self):
+        directory = self.root / 'drafts'
+        draft = '/api/workbench/demo-event/draft'
+        chat = '/api/workbench/demo-event/conversation'
+
+        def write(content, writer, sequence, base=''):
+            return {'content': content, 'edit': {'writer': writer, 'sequence': sequence, 'base': base}}
+
+        with self.session('--demo', '--data-dir', str(directory)):
+            self.api(draft, {'content': 'old client draft'})
+            latest = write('newer input', 'one', 2)
+            receipt = self.api(draft, latest)
+            self.assertEqual(receipt['revision'], 'one:2')
+            self.assertEqual(self.api(draft, latest), receipt)
+            delayed = write('older input', 'one', 1)
+            self.assertEqual(self.request(draft, delayed, api=True)[0], 409)
+
+        with self.session('--demo', '--data-dir', str(directory)):
+            self.assertEqual(self.api(chat)['draft'], 'newer input')
+            fresh = write('new page', 'two', 1, 'one:2')
+            self.assertEqual(self.api(draft, fresh)['revision'], 'two:1')
+            status, body = self.request(draft, write('previous page', 'one', 3), api=True)
+            self.assertEqual(status, 409)
+            self.assertEqual(json.loads(body)['draft_conflict'], {'content': 'new page', 'revision': 'two:1'})
+            self.assertEqual(self.api(chat)['draft'], 'new page')
+            self.api(draft, write('explicitly reconciled', 'three', 1, 'two:1'))
+            self.assertEqual(self.api(chat)['draft'], 'explicitly reconciled')
+
     def test_default_session_is_synthetic_and_drafts_are_temporary(self):
         chat = '/api/workbench/demo-event/conversation'
         with self.session():

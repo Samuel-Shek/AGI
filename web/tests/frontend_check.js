@@ -27,7 +27,12 @@ const context=vm.createContext({document, localStorage:{getItem:k=>storage.get(k
   fetch:async (path, opts) => {
     calls.push({path,opts}); let body={};
     if(path.endsWith('/draft') && failNextDraft){failNextDraft=false;throw new Error('synthetic autosave failure');}
-    if(path==='/api/state') body={status:'ok',metrics:{needs:closed?0:1,automatic:0},sources:[],systems:[],recent_resolved:[],automatic:[],history:[],events:[]};
+    if(path.endsWith('/draft')){
+      const {edit} = JSON.parse(opts.body);
+      assert.equal(opts.keepalive, true);
+      body={saved:true,revision:edit.writer+':'+edit.sequence};
+    }
+    else if(path==='/api/state') body={status:'ok',metrics:{needs:closed?0:1,automatic:0},sources:[],systems:[],recent_resolved:[],automatic:[],history:[],events:[]};
     else if(path.endsWith('/codex-continue')) body={phase:'delivered',message:'Codex 已收到接手内容'};
     else if(path.endsWith('/action')) {actions.push(JSON.parse(opts.body));closed=true;body={message:'已在本机记录，待同步'};}
     else if(path.endsWith('/conversation')) body={messages:[...messages],draft:'',notice:'未连接任何模型'};
@@ -194,8 +199,8 @@ async function main(){
   const leave = () => vm.runInContext('workbench.prepareToClose()',context);
   const resume = () => vm.runInContext('workbench.resumeEditing()',context);
   const drafts = () => calls.filter(call => call.path.endsWith('/draft'));
-  edit('immediate close');
   failNextDraft = true;
+  edit('immediate close');
   assert.equal(await leave(),false);
   assert.equal(document.body.inert,false);
   assert.equal(node('#case-input').value,'immediate close');

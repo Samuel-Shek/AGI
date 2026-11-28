@@ -7,7 +7,7 @@ import re
 import threading
 
 from .core_reader import ReadError, valid_id, decode
-from .storage import now
+from .storage import clear_draft, now, store_draft
 from .reviews import RESPONSIBILITY, PROGRESS
 from .triage import closure_question, grounded_prompt, human_requirement, CLOSURE_TECHNICAL, local_option, recommendation_choice
 from .presentation import recommendation_excerpt, short_title, clauses, readable
@@ -336,7 +336,8 @@ class State:
             records = self.store.read()
             example = self.fixture_ui.get(identifier, {})
             return {'messages': [display_record(r) for r in example.get('messages', []) + records['messages'].get(identifier, [])],
-                    'draft': records['drafts'].get(identifier, ''), 'notice': NOTICE,
+                    'draft': records['drafts'].get(identifier, ''),
+                    'draft_revision': records.get('draft_versions', {}).get(identifier, ''), 'notice': NOTICE,
                     'synthetic_plan': words(example.get('plan', '')), 'read_only': False}
 
     def write(self, identifier, mode, payload):
@@ -375,8 +376,7 @@ class State:
                 raise ValueError('invalid_operation')
             def mutate(data):
                 if mode == 'draft':
-                    data['drafts'][identifier] = content
-                    return {'saved': True}
+                    return store_draft(data, identifier, content, payload.get('edit'))
                 rows = data['messages'].setdefault(identifier, []) if mode == 'message' else data['actions']
                 existing = next((r for r in rows if r['request_id'] == request_id), None)
                 if existing:
@@ -385,7 +385,7 @@ class State:
                     return {'saved': True, 'message': '已在本机记录，待同步'}
                 if mode == 'message':
                     rows.append({'author': 'user', 'content': content.strip(), 'created_at': now(), 'request_id': request_id})
-                    data['drafts'][identifier] = ''
+                    clear_draft(data, identifier)
                 else:
                     rows.append({'id': identifier, 'action': action if mode == 'action' else 'sync',
                                  'choice': payload.get('choice', '') if action == 'answer_choice' else '',

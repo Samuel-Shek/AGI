@@ -1,5 +1,6 @@
 """Explicit one-click handoff through the installed fixed Core controller."""
 from .core_reader import ReadError
+from .storage import store_draft
 # This adapter invokes the installed, fixed controller only on an explicit click.
 # It does not implement its own Codex IPC, model configuration or permission gate.
 import json
@@ -70,7 +71,7 @@ def continue_in_codex(state, identifier, payload):
             return {'phase':'unavailable', 'message':'合成界面展示不会发起真实交接。'}
         # Preserve typed content before any request that could outlive this App.
         if draft is not None:
-            state.store.update(lambda data: data['drafts'].__setitem__(identifier, draft))
+            state.store.update(lambda data: store_draft(data, identifier, draft, payload.get('draft_edit')))
         try:
             result = core_command(state.reader.config, 'handoff-status', identifier)
             if result.get('status') != 'ok':

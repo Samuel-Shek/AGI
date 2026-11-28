@@ -29,10 +29,14 @@ function formatTime(value, withDate = false) {
 }
 async function api(path, options = {}) {
   const response = await fetch(path, {method: options.method || "GET", credentials: "same-origin",
-    cache: "no-store", signal: options.signal, headers: {"X-PSI-Session": csrf, ...(options.body ? {"Content-Type": "application/json"} : {})},
+    cache: "no-store", signal: options.signal, keepalive: options.keepalive === true, headers: {"X-PSI-Session": csrf, ...(options.body ? {"Content-Type": "application/json"} : {})},
     ...(options.body ? {body: JSON.stringify(options.body)} : {})});
   const value = await response.json();
-  if (!response.ok) throw new Error(value.message || "本机请求未完成");
+  if (!response.ok) {
+    const error = new Error(value.message || "本机请求未完成");
+    if (response.status === 409) error.draftConflict = value.draft_conflict;
+    throw error;
+  }
   return value;
 }
 function announce(message) {

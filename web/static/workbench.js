@@ -1,7 +1,7 @@
 "use strict";
 // Adapted decision-center workbench.js / app.js detail and conversation markup.
 const workbench = (() => {
-  const state = {scope: "attention", selected: null, detail: null, chat: null, request: 0, listRequest: 0, pending: null, drafts: new Map(), timers: new Map(), draftWrites: new Map(), dirty: new Set(), handoffs: new Set()};
+  const state = {scope: "attention", selected: null, detail: null, chat: null, request: 0, listRequest: 0, pending: null, drafts: new Map(), edits: new Map(), conflicts: new Map(), draftWrites: new Map(), dirty: new Set(), handoffs: new Set()};
   const endpoint = (id, suffix = "") => `/api/workbench/${encodeURIComponent(id)}${suffix}`;
   const labels = {open: "问题与进展", records: "处理记录", attention: "问题", automatic: "AI 负责", waiting: "等待条件", closed: "已结束", all: "全部"};
   function showSummary(visible) {
@@ -135,7 +135,21 @@ const workbench = (() => {
     const pane = $("#case-conversation"); pane.className = "conversation-pane";
     pane.innerHTML = `<header class="conversation-header"><div class="conversation-title"><span class="eyebrow chat-wide-title">问题对话</span><span class="eyebrow chat-narrow-title">本问题的对话</span><h2 class="chat-wide-title">${demo ? "示例对话与草稿" : "和 AI 一起处理"}</h2><h2 class="chat-narrow-title">${demo ? "示例草稿" : "一起判断下一步"}</h2></div><span class="conversation-status archived">${demo ? "示例" : "在 Codex 继续"}</span><p class="chat-boundary">${demo ? "草稿保存在本机。" : "事项和你的回复会一起交给 Codex"}</p></header>
       <div class="conversation-messages" aria-live="polite">${chat.messages.length ? chat.messages.map(messageMarkup).join("") : '<article class="conversation-onboarding"><strong>写下你的想法</strong><p>在下面写下你对这件事的回复。</p></article>'}${chat.synthetic_plan ? `<article class="memory-proposal-card"><header><span class="eyebrow">可补充到业务记忆 · 合成示例</span><span class="fact-status">待确认</span></header><strong>个人偏好记录示例</strong><p>${esc(chat.synthetic_plan)}</p><dl><dt>内容归属</dt><dd>合成夹具，不来自真实用户</dd><dt>证据边界</dt><dd>仅供界面测试，本版不会写入记忆。</dd></dl></article>` : ""}</div>
-      <div class="composer-wrap"><p id="chat-error" class="error-text" role="status"></p><label class="sr-only" for="case-input">给当前问题补充想法</label><textarea id="case-input" maxlength="4000" placeholder="写下你对这件事的回复…"></textarea><div class="composer-footer"><span id="draft-status">输入时自动保存草稿。</span><button class="send-button" type="button" id="case-codex" ${demo ? "hidden" : ""}>在 Codex 中继续</button></div></div>`;
+      <div class="composer-wrap"><p id="chat-error" class="error-text" role="status"></p><label class="sr-only" for="case-input">给当前问题补充想法</label><textarea id="case-input" maxlength="4000" placeholder="写下你对这件事的回复…"></textarea><div id="draft-conflict" hidden><p>另一份草稿已保存在本机。请核对下方已存版本，在输入框中保留需要的内容。</p><pre id="saved-draft"></pre><button type="button" id="replace-draft">用当前输入替换这份已存草稿</button></div><div class="composer-footer"><span id="draft-status">输入时自动保存草稿。</span><button type="button" id="retry-draft" hidden>重试保存草稿</button><button class="send-button" type="button" id="case-codex" ${demo ? "hidden" : ""}>在 Codex 中继续</button></div></div>`;
+    $("#replace-draft").addEventListener("click", () => {
+      const current = state.conflicts.get(id);
+      if (!current) return;
+      state.edits.set(id, {writer: crypto.randomUUID(), sequence: 1, base: current.revision});
+      state.conflicts.delete(id);
+      showDraftConflict(id);
+      saveDraft(id);
+    });
+    $("#retry-draft").addEventListener("click", () => saveDraft(id));
+    if (state.dirty.has(id)) {
+      text("#draft-status", "草稿待保存。");
+      $("#retry-draft").hidden = false;
+    }
+    showDraftConflict(id);
     $("#case-codex").addEventListener("click", () => presentCodex($("#case-input").value));
     $("#case-codex").disabled = demo || state.handoffs.has(id) || state.detail?.source_missing;
     if (!demo && state.detail?.kind === "closure" && !state.detail.codex_reply_available && !state.detail.codex_handoff_available) {
@@ -145,46 +159,83 @@ const workbench = (() => {
     }
     const input = $("#case-input");
     input.disabled = Boolean(chat.read_only || state.handoffs.has(id));
-    input.value = state.drafts.has(id) ? state.drafts.get(id) : chat.draft;
+    if (!state.dirty.has(id)) {
+      state.drafts.set(id, chat.draft);
+      state.edits.set(id, {writer: crypto.randomUUID(), sequence: 0, base: chat.draft_revision || ""});
+    }
+    input.value = state.drafts.get(id);
     input.addEventListener("input", () => {
+      const last = state.edits.get(id);
+      state.edits.set(id, {...last, sequence: last.sequence + 1});
       state.drafts.set(id, input.value);
       state.dirty.add(id);
       reportPending();
-      clearTimeout(state.timers.get(id));
-      state.timers.set(id, setTimeout(() => saveDraft(id), 350));
+      text("#draft-status", "草稿待保存。");
+      if (state.conflicts.has(id)) showDraftConflict(id);
+      else if (!state.draftWrites.has(id)) saveDraft(id);
     });
   }
-  function reportPending() {
-    if (typeof window !== "undefined") {
-      if (!state.dirty.size) $("#draft-recovery").hidden = true;
+  function showDraftConflict(id) {
+    if (state.selected !== id || !$("#draft-conflict")) return;
+    const current = state.conflicts.get(id);
+    $("#draft-conflict").hidden = !current;
+    if (current) {
+      text("#saved-draft", current.content || "（空草稿）");
+      text("#draft-status", "当前输入仍在本页，核对后可以保存。");
+      $("#retry-draft").hidden = true;
     }
   }
-  async function saveDraft(id) {
-    clearTimeout(state.timers.get(id));
-    state.timers.delete(id);
-    if (!state.dirty.has(id)) return true;
-    const content = state.drafts.get(id);
-    const previous = state.draftWrites.get(id);
-    if (previous?.content === content) return previous.promise;
-    const promise = (previous?.promise || Promise.resolve()).then(async () => {
-      if (state.drafts.get(id) !== content) return true;
-      try {
-        await api(endpoint(id, "/draft"), {method: "POST", body: {content}, signal: globalThis.AbortSignal?.timeout?.(4000)});
-        if (state.drafts.get(id) === content) {
-          state.dirty.delete(id);
-          reportPending();
-          if (state.selected === id) text("#draft-status", "草稿已保存在本机。");
-        }
-        return true;
-      } catch (error) {
-        if (state.selected === id) text("#chat-error", "草稿尚未保存：" + error.message);
-        return false;
-      }
-    });
-    const write = {content, promise};
+  function guardLeave(event) {
+    flushDrafts();
+    event.preventDefault();
+    event.returnValue = true;
+  }
+  function reportPending() {
+    if (typeof window === "undefined") return;
+    if (state.dirty.size) window.addEventListener("beforeunload", guardLeave);
+    else {
+      window.removeEventListener("beforeunload", guardLeave);
+      $("#draft-recovery").hidden = true;
+    }
+  }
+  function saveDraft(id) {
+    if (!state.dirty.has(id)) return Promise.resolve(true);
+    if (state.conflicts.has(id)) return Promise.resolve(false);
+    const edit = state.edits.get(id), content = state.drafts.get(id);
+    const active = state.draftWrites.get(id);
+    if (active?.edit === edit) return active.promise;
+    const write = {edit};
     state.draftWrites.set(id, write);
-    try { return await promise; }
-    finally { if (state.draftWrites.get(id) === write) state.draftWrites.delete(id); }
+    // Start dispatch in the input/visibility event, while this document is still alive.
+    write.promise = api(endpoint(id, "/draft"), {method: "POST", body: {content, edit}, keepalive: true, signal: globalThis.AbortSignal?.timeout?.(4000)}).then(receipt => {
+      if (receipt.saved !== true || receipt.revision !== edit.writer + ":" + edit.sequence) throw new Error("缺少当前版本的保存回执");
+      if (state.edits.get(id) === edit) {
+        state.dirty.delete(id);
+        reportPending();
+        if (state.selected === id && $("#retry-draft")) {
+          text("#draft-status", "草稿已保存在本机。");
+          $("#retry-draft").hidden = true;
+        }
+      }
+      return true;
+    }).catch(error => {
+      if (state.edits.get(id) === edit && error.draftConflict) {
+        state.conflicts.set(id, error.draftConflict);
+        showDraftConflict(id);
+      } else if (state.edits.get(id) === edit && state.selected === id && $("#retry-draft")) {
+        text("#draft-status", "草稿尚未保存：" + error.message);
+        $("#retry-draft").hidden = false;
+      }
+      return false;
+    }).finally(() => {
+      if (state.draftWrites.get(id) !== write) return;
+      state.draftWrites.delete(id);
+      if (state.dirty.has(id) && state.edits.get(id) !== edit) saveDraft(id);
+    });
+    return write.promise;
+  }
+  function flushDrafts() {
+    for (const id of state.dirty) saveDraft(id);
   }
   async function prepareToClose() {
     if (state.handoffs.size) {
@@ -217,9 +268,10 @@ const workbench = (() => {
     const button = $("#case-codex"); if (button) button.disabled = true;
     show("正在打开 Codex 并交接当前事项…");
     try {
-      clearTimeout(state.timers.get(id));
-      await state.draftWrites.get(id)?.promise;
-      let result = await api(endpoint(id, "/codex-continue"), {method: "POST", body: {content, revision, draft}});
+      await saveDraft(id);
+      if (state.conflicts.has(id)) { show("请先核对两份草稿。"); return; }
+      const edit = state.edits.get(id);
+      let result = await api(endpoint(id, "/codex-continue"), {method: "POST", body: {content, revision, draft, ...(edit?.sequence ? {draft_edit: edit} : {})}});
       show(result.message);
       for (let attempt = 0; result.phase === "pending" && attempt < 60; attempt++) {
         await new Promise(resolve => setTimeout(resolve, 1000));
@@ -252,6 +304,11 @@ const workbench = (() => {
     text("#choice-error", ""); $("#choice-dialog").showModal();
   }
   function bind() {
+    if (typeof window !== "undefined") window.addEventListener("pagehide", flushDrafts);
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) flushDrafts();
+    });
+
     $("#draft-recovery").addEventListener("click", () => {
       if (!state.dirty.size) return;
       text("#draft-recovery-note", `工作台中有 ${state.dirty.size} 项编辑尚未确认保存。已写入的版本仍会保留，你可以继续编辑并重试。`);
@@ -263,8 +320,8 @@ const workbench = (() => {
         return;
       }
       for (const id of state.dirty) {
-        clearTimeout(state.timers.get(id));
-        state.timers.delete(id);
+        state.edits.delete(id);
+        state.conflicts.delete(id);
         state.drafts.delete(id);
       }
       state.dirty.clear();
